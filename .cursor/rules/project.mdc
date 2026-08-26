@@ -1,0 +1,35 @@
+---
+description: Core development rules for SCC Delicious
+alwaysApply: true
+---
+
+# SCC Delicious Project Rules
+
+## General
+
+- This is a full-stack web application.
+- Follow the project's established architecture.
+- Do not create duplicate files or duplicate implementations.
+- Do not modify unrelated files.
+- Prefer small, focused changes.
+- Before making significant architectural changes, inspect the existing codebase first.
+
+## Code Quality
+
+- Use clear and descriptive names.
+- Keep functions focused on a single responsibility.
+- Avoid unnecessary abstractions.
+- Do not leave unused imports or dead code.
+- Do not claim functionality is implemented unless the implementation actually exists.
+
+## Security
+
+- Never hard-code passwords, API keys, database credentials, JWT secrets, or other secrets.
+- Secrets must be stored in environment variables.
+- Never expose sensitive credentials to the frontend.
+
+## Verification
+
+- After making changes, verify imports and references.
+- Run appropriate tests or validation when available.
+- Clearly distinguish implemented functionality from functionality that has actually been tested.
