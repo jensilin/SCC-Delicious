@@ -1,0 +1,66 @@
+---
+description: Backend architecture and development rules for SCC Delicious
+globs:
+  - "backend/**/*.js"
+  - "backend/**/*.mjs"
+  - "backend/**/*.cjs"
+alwaysApply: false
+---
+
+# Backend Rules
+
+## Architecture
+
+The backend follows this architecture:
+
+Routes
+→ Controllers
+→ Services
+→ Prisma
+→ PostgreSQL
+
+## Routes
+
+- Routes are responsible for endpoint definitions and middleware composition.
+- Routes must not contain business logic.
+
+## Controllers
+
+- Controllers handle HTTP concerns only.
+- Controllers should parse the request and return the appropriate response.
+- Business logic must not be implemented inside controllers.
+
+## Services
+
+- Business logic belongs in services.
+- Services must not depend directly on Express request or response objects.
+- Services should be independently testable.
+
+## Database
+
+- Prisma is the database access layer.
+- Do not access PostgreSQL directly from controllers.
+- Database schema changes must use Prisma migrations.
+
+## Validation
+
+- Validate external input at the API boundary.
+- Use Zod for request validation.
+
+## Security
+
+- Never expose passwords, JWT secrets, database credentials, or other secrets.
+- Never trust role information supplied by the client.
+- Authorization must be enforced on the server.
+- Resource ownership must be verified before modifying protected resources.
+
+## Error Handling
+
+- Use the project's centralized error-handling approach.
+- Do not expose stack traces or internal implementation details to clients.
+
+## Changes
+
+- Inspect existing backend code before introducing new patterns.
+- Reuse existing services/utilities where appropriate.
+- Do not create duplicate controllers, services, routes, or configuration modules.
