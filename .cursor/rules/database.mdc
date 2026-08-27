@@ -1,0 +1,59 @@
+---
+description: PostgreSQL and Prisma database rules for SCC Delicious
+globs:
+  - "backend/prisma/**"
+  - "backend/src/services/**/*.js"
+  - "backend/src/repositories/**/*.js"
+alwaysApply: false
+---
+
+# Database Rules
+
+## Database
+
+- Supabase PostgreSQL is the project's database.
+- Prisma is the database access layer.
+- Do not connect directly to PostgreSQL from application code.
+- Do not use MongoDB or Mongoose.
+
+## Schema
+
+- `schema.prisma` is the database schema source of truth.
+- Database schema changes must use Prisma migrations.
+- Never modify an already-applied migration.
+- Do not modify the production schema manually through the Supabase dashboard.
+
+## Data Integrity
+
+- Use foreign keys for relationships.
+- Preserve historical order information.
+- Never use floating-point values for persisted monetary amounts.
+- Monetary values use integer minor units.
+- Inventory quantity must never become negative.
+
+## Transactions
+
+- Multi-step checkout operations must use database transactions.
+- Inventory updates must be concurrency-safe.
+- Never implement inventory as:
+  1. Read quantity
+  2. Check quantity in JavaScript
+  3. Save quantity
+
+## Security
+
+- Database credentials must only exist in server-side environment variables.
+- Never expose database credentials to frontend code.
+- Never commit `.env`.
+
+## Changes
+
+Before changing the database schema:
+
+1. Inspect the existing Prisma schema.
+2. Identify affected relationships.
+3. Consider existing data.
+4. Create a migration.
+5. Update affected services.
+6. Update tests.
+7. Verify the migration and application behavior.
