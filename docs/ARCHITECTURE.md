@@ -599,12 +599,14 @@ name with a placeholder value and is committed, so that setting up the project d
 guessing.
 
 Separate database environments are used so that tests can reset data destructively without
-affecting development work. The exact number of environments is a remaining decision.
+affecting development work. The test database is a local PostgreSQL container reached through
+`TEST_DATABASE_URL`, which is required by the test suite only and never by the running server. How
+many deployed environments exist beyond that remains open.
 
 # Testing Strategy
 
-Nothing has been tested, because nothing has been built. This section states what testing will
-consist of.
+This section states what testing consists of. Only application bootstrap and the health endpoint
+are covered so far; every scenario listed below describes intent rather than existing coverage.
 
 - **Unit tests** for pure logic: total and line-item calculation, order status transition
   rules, and validation schemas. *Why here:* these are fast, deterministic, and cover the
@@ -628,10 +630,19 @@ Scenarios treated as mandatory rather than optional:
 7. A failed payment leaves no order and no stock movement.
 8. An order's line totals sum to its order total and to its payment amount.
 
-Test tooling has not been selected, and how a test database is provisioned is undecided. Both
-block writing the tests above. Project documentation must continue to distinguish what is
-implemented from what is actually covered by passing tests, and must not imply coverage that
-does not exist.
+**Tooling.** Tests run on Node's built-in runner, `node:test`, and integration tests drive HTTP
+with the built-in `fetch` against an application bound to an ephemeral port. Neither requires a
+dependency, which is why they were preferred to Vitest and Supertest.
+
+**The test database is a local PostgreSQL container**, separate from development and from
+production, so the suite may reset data destructively. `backend/tests/setup.js` reads
+`TEST_DATABASE_URL`, refuses any host that is not loopback, and rebinds `DATABASE_URL` before the
+application is loaded — so a misconfigured variable cannot quietly point the suite at Supabase.
+The container runs the same committed migration as every other environment, which means the test
+database exercises the real constraints rather than an approximation of them.
+
+Project documentation must continue to distinguish what is implemented from what is actually
+covered by passing tests, and must not imply coverage that does not exist.
 
 # Project Structure
 
@@ -744,11 +755,6 @@ rather than by accident during implementation. Items that block a specific phase
 - The permitted status transitions, and who may perform each.
 - Whether an order can be cancelled partially or only in full.
 
-**Blocks writing tests**
-
-- Test framework and runner selection.
-- How a test database is provisioned and reset.
-
 **Not blocking**
 
 - The currency. A single currency is assumed and no currency column is included; adding one is
@@ -773,6 +779,14 @@ the document. Each was resolved by the project owner, not assumed during impleme
 - **The payment status list is `SUCCEEDED` alone.** This was never recorded as an open question:
   the column existed with no defined values, which was found during a schema audit. See
   [Checkout and Payment](#checkout-and-payment).
+- **Tests run on `node:test`.** Previously listed as blocking the tests. See
+  [Testing Strategy](#testing-strategy).
+- **The test database is a local PostgreSQL container**, reached through `TEST_DATABASE_URL` and
+  migrated with the committed migration. Previously listed as blocking the tests.
+- **Integration tests drive HTTP with the built-in `fetch`** against an ephemeral port rather than
+  Supertest. This was never recorded as an open question: the architecture required
+  full-middleware-stack integration tests without saying what issued the requests, which was found
+  during a testing audit.
 
 The permitted transitions between order statuses remain open and are listed above, under order
 management.
