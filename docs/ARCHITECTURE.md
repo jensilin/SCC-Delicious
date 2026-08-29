@@ -291,7 +291,8 @@ Shop        id (uuid), name, created_at, updated_at
 Food        id (uuid), shop_id -> Shop, name, price_minor,
             stock_quantity (check >= 0), created_at, updated_at
 
-Cart        id (uuid), user_id -> User, created_at, updated_at
+Cart        id (uuid), user_id -> User, shop_id -> Shop (nullable),
+            created_at, updated_at
 
 CartItem    id (uuid), cart_id -> Cart, food_id -> Food, quantity (check > 0),
             unique (cart_id, food_id)
@@ -313,6 +314,8 @@ Payment     id (uuid), order_id -> Order (unique), status, amount_minor,
 - **Shop to Food:** one shop has many foods; each food belongs to exactly one shop. A food is
   never shared between shops.
 - **User to Cart:** one user has one active cart, owned by that user alone.
+- **Cart to Shop:** a cart holds items from at most one shop at a time and carries a shop
+  reference directly. The reference is null while the cart is empty.
 - **Cart to CartItem:** one cart has many cart items. A given food appears at most once per
   cart, with a quantity, enforced by a uniqueness constraint on the cart-and-food pair.
 - **CartItem to Food:** each cart item references one food and stores quantity only, never
@@ -416,8 +419,19 @@ accepted cost is stated plainly: an item in a cart can sell out before checkout,
 interface must present that rejection clearly rather than as an unexpected error.
 
 Because an order references exactly one shop, a checkout covers items from exactly one shop.
-Whether the cart itself is therefore restricted to a single shop at a time, or is partitioned
-at checkout, is a remaining decision that affects the `Cart` table.
+**The cart is therefore restricted to a single shop at a time**, and carries a shop reference
+that is null while it is empty. Adding a food from a different shop is refused rather than
+silently accepted; the interface offers to clear the cart and switch shops.
+
+*Why this rather than partitioning at checkout:* a cart spanning several shops makes one
+checkout produce several orders, and since a payment record is one-to-one with an order and an
+order's idempotency key is unique, one client-supplied key would then no longer identify one
+row. Restricting the cart keeps checkout a one-to-one mapping from cart to order, at the cost
+of an explicit shop-switching step in the interface.
+
+The accompanying rule — that every cart item's food belongs to the cart's shop — spans two
+tables and cannot be expressed as a check constraint. It is a service-layer obligation and a
+test, not a database guarantee.
 
 # Checkout and Payment
 
@@ -453,6 +467,11 @@ Because checkout is one transaction, a failed payment rolls the whole transactio
 order, no payment row, and stock untouched. Payment rows in v1 therefore record the outcome of
 a completed checkout, and the one-to-one relationship with `Order` holds without ambiguity.
 
+**The payment status column holds exactly one permitted value in v1: `SUCCEEDED`.** A failed or
+pending payment row is unreachable by construction, so permitting those values would describe
+rows this design cannot create. Introducing a real gateway would revisit this alongside the
+single-transaction shape.
+
 One structural caveat to be aware of before any real provider is ever introduced: a real
 gateway is a network call that cannot live inside a database transaction and may settle after
 the HTTP response. Adopting one would require revisiting this single-transaction shape. That is
@@ -480,9 +499,17 @@ the inventory read-compare-write, and a cancellation applied twice would restock
 Cancellation before fulfilment returns stock through the same conditional-decrement path used
 to consume it, so inventory movements have one implementation rather than two.
 
-The authoritative list of order statuses and the permitted transitions between them is a
-product question and is **not** fixed in this document. It is a remaining decision, and it
-blocks this part of the work.
+**The authoritative list of order statuses is `PLACED`, `PREPARING`, `READY`, `COMPLETED`, and
+`CANCELLED`.** These are the `status` column's permitted values, held as a PostgreSQL enum so
+that a value outside the set is rejected by the database rather than by application code alone.
+
+There is deliberately no pre-payment status. Payment is simulated inside the checkout
+transaction and a failure rolls that transaction back, so an order exists only once its payment
+has succeeded; the list begins after payment rather than before it.
+
+The permitted transitions between these values, who may perform each, and the statuses from
+which a cancellation may still restore stock are a remaining decision, and they block this part
+of the work.
 
 Inventory movements and status changes are not recorded in audit tables in v1.
 
@@ -613,13 +640,14 @@ can be reviewed and committed together.
 
 ```
 scc-delicious/
-  client/                 React + Vite application
+  frontend/               React + Vite application
     src/
       app/                application shell, providers, router setup
       features/           feature-scoped routes, components, API calls
       components/         shared presentational components
       lib/                Axios instance, helpers
-  server/                 Express API
+    .env.example          documented variable names, placeholder values
+  backend/                Express API
     src/
       config/             environment parsing and validation
       routes/             path + middleware composition
@@ -629,12 +657,18 @@ scc-delicious/
       lib/                shared server utilities
     prisma/               schema and committed migrations
     tests/                unit and integration tests
+    .env.example          documented variable names, placeholder values
   docs/                   this document and future design notes
   .cursor/rules/          Cursor rules
-  .env.example            documented variable names, placeholder values
-  .gitignore              ignores .env from the first commit
+  .cursor/skills/         Cursor skills
+  .gitignore              ignores every .env from the first commit
   README.md
 ```
+
+The `backend/` and `frontend/` names are binding rather than cosmetic: the rule globs in
+`.cursor/rules/` attach to those paths, so renaming either directory silently detaches its
+guardrails from the code inside it. Each application holds its own environment files, because
+the two are configured independently and only the backend ever sees a credential.
 
 Migrations are source of truth and are committed. Work proceeds in small, focused commits on
 short-lived branches.
@@ -699,14 +733,6 @@ restructuring what is described above.
 The following are genuinely undecided. They are recorded so that they are settled explicitly
 rather than by accident during implementation. Items that block a specific phase are marked.
 
-**Blocks the database schema**
-
-- Whether the cart is restricted to a single shop at a time, or partitioned at checkout. An
-  order references exactly one shop, so one of the two must be true; the answer determines
-  whether `Cart` carries a shop reference.
-- The authoritative list of order statuses, since it becomes the `status` column's permitted
-  values.
-
 **Blocks authentication**
 
 - The controlled mechanism by which `ADMIN` accounts are created.
@@ -733,6 +759,23 @@ rather than by accident during implementation. Items that block a specific phase
 - How food images are stored and served, if at all.
 - Where each application is deployed, and the number of database environments.
 - Continuous integration setup.
+
+## Resolved since first writing
+
+Recorded here so that a settled decision is traceable rather than only visible in the body of
+the document. Each was resolved by the project owner, not assumed during implementation.
+
+- **The cart is restricted to a single shop at a time**, so `Cart` carries a nullable shop
+  reference. Previously listed as blocking the database schema. See [Cart](#cart).
+- **The order status list is `PLACED`, `PREPARING`, `READY`, `COMPLETED`, `CANCELLED`**, held as
+  a PostgreSQL enum. Previously listed as blocking the database schema. See
+  [Order Management](#order-management).
+- **The payment status list is `SUCCEEDED` alone.** This was never recorded as an open question:
+  the column existed with no defined values, which was found during a schema audit. See
+  [Checkout and Payment](#checkout-and-payment).
+
+The permitted transitions between order statuses remain open and are listed above, under order
+management.
 
 ## Implementation Principle
 

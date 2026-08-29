@@ -28,16 +28,32 @@ its lifetime:
 What is never valid for migrations is transaction mode on port 6543. The distinction that matters
 is session versus transaction, not pooled versus direct.
 
-The Prisma `datasource` block reads the pooled URL as its `url` and the direct URL as
-`directUrl`, so `prisma migrate` and `prisma db push` use the direct connection automatically
-while the runtime client uses the pooler. If `directUrl` is missing, migrations run through the
-pooler and fail in confusing ways.
+## Where each URL is configured
+
+Prisma 7 removed `url` from the `datasource` block in `schema.prisma`, which now carries only
+its `provider`. The `directUrl` property no longer exists at all. The two connections are wired
+up in two separate places:
+
+| Consumer | Configured in | Value used |
+|---|---|---|
+| Prisma CLI — migrations, introspection, drift checks | `backend/prisma.config.mjs`, as `datasource.url` | `DIRECT_URL` |
+| The running application's Prisma Client | supplied when the client is constructed | `DATABASE_URL` |
+
+`datasource.url` in the config file is the **session** connection deliberately. It is the only
+URL the CLI has, and migrations need session-level operations and an advisory lock. Point it at
+the transaction pooler on 6543 and migrations fail in confusing ways.
+
+Prisma 7 also stopped loading `.env` on its own, so the config file loads it explicitly. That is
+not just convenience here: `backend/.env` has Windows line endings, and reading it in any way
+that keeps the carriage return leaves a stray `\r` on the end of a connection value. It then
+fails while looking exactly like a credential problem.
 
 ## Symptoms and likely causes
 
 **Hangs, then times out; or "could not acquire advisory lock"**
-Migration is going through the pooler. Confirm `directUrl` is configured and that `DIRECT_URL`
-points at the direct connection, not the pooler port.
+The migration is going through the transaction pooler. Confirm that `datasource.url` in
+`backend/prisma.config.mjs` resolves to `DIRECT_URL`, and that `DIRECT_URL` is the session
+endpoint on port 5432 rather than the transaction pooler on 6543.
 
 **"prepared statement already exists" or similar protocol errors**
 Pooled connection used where a session connection is required. Same fix. For the runtime

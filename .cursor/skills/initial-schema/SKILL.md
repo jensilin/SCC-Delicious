@@ -165,8 +165,12 @@ needs.
 
 Write `backend/prisma/schema.prisma`. One file, one coherent baseline.
 
-- Configure the datasource with both the pooled connection for the application and the direct
-  connection for migrations.
+- The `datasource` block carries only `provider = "postgresql"`. Prisma 7 accepts neither `url`
+  nor `directUrl` there. The CLI's connection lives in `backend/prisma.config.mjs` as
+  `datasource.url`, taken from `DIRECT_URL` because migrations need a session connection, and
+  the application's pooled `DATABASE_URL` is supplied when the Prisma Client is constructed.
+  That config file also loads `.env`, which Prisma 7 no longer does by itself. See
+  [supabase-connections.md](../database-migration/references/supabase-connections.md).
 - Use consistent naming, and map field names to column names consistently with the documented
   schema sketch.
 - Types must satisfy the invariants in `database.mdc` — check the edit against it before
@@ -187,9 +191,10 @@ not the pooled one.
 
 ### Confirm the target database first
 
-Do this before the first Prisma command that connects to a database — including
-`prisma migrate dev --create-only`, which despite its name still connects, and may create and
-drop a shadow database. There is no file-only step to hide behind. Confirm and state:
+Do this before the first Prisma command that connects to a database. Generating the migration
+with `migrate diff --from-empty` (below) does not connect, so the first command that does is
+`migrate deploy` — which applies the migration. The confirmation therefore has to happen before
+it, not alongside it. Confirm and state:
 
 - which database the direct Prisma connection actually resolves to — host, port, database name
 - which environment that database represents
@@ -201,22 +206,41 @@ doing so. A stale or inherited environment variable is exactly how a first migra
 somewhere it should not. If the target is unexpected, or if any of these four points cannot be
 answered with certainty, **stop**.
 
-Because the baseline needs raw SQL for its check constraints, generate before applying:
+Because the baseline needs raw SQL for its check constraints, generate before applying. Create
+the migration directory yourself as `backend/prisma/migrations/<timestamp>_init/`, with a UTC
+timestamp in `YYYYMMDDHHMMSS` form, and put a `migration_lock.toml` containing
+`provider = "postgresql"` beside it in `migrations/`. `migrate deploy` needs both to recognise
+the migration.
 
 ```bash
-prisma migrate dev --create-only --name init
-# add the CHECK constraints and any other unsupported SQL to
-# backend/prisma/migrations/<timestamp>_init/migration.sql
-prisma migrate dev
+# 1. Generate the SQL. Neither side touches a database: --from-empty is a computation and
+#    --to-schema-datamodel reads the schema file.
+prisma migrate diff \
+  --from-empty \
+  --to-schema-datamodel prisma/schema.prisma \
+  --script > prisma/migrations/<timestamp>_init/migration.sql
+
+# 2. Add the CHECK constraints and the row-level security statements to that file by hand.
+
+# 3. Apply it.
+prisma migrate deploy
 ```
+
+**Why this rather than `migrate dev`.** `migrate dev` creates and drops a shadow database and
+may propose resetting, and it is meant for a local development database. This project's only
+database is the shared Supabase project, so neither condition holds. `migrate diff` plus
+`migrate deploy` needs no shadow database and cannot propose a reset. What it gives up is
+Prisma checking the SQL against a shadow database as it is generated, and that is recovered
+afterwards rather than lost: the drift check in the `database-migration` skill compares the live
+database against the schema and exits 0 only if they agree, which is the same assurance one step
+later. Do not substitute `migrate dev` to avoid hand-creating the directory.
 
 Safety, even on a first migration:
 
-- Target a **local development database** only. `prisma migrate dev` may create and drop a
-  shadow database and may propose resetting.
-- If Prisma proposes a reset or reports drift on what should be an empty database, **stop** —
-  on a baseline that means the database is not in the state the preconditions assumed.
-- Apply to non-development environments with `prisma migrate deploy`, never `migrate dev`.
+- If Prisma reports drift on what should be an empty database, or any command proposes a reset,
+  **stop** — on a baseline that means the database is not in the state the preconditions assumed.
+- `prisma migrate deploy` is the apply command here and in every non-development environment.
+  Never `migrate dev` against a shared, staging, or production database.
 - **`prisma migrate reset` must never be run against a shared, staging, or production
   database.** It drops and recreates everything, and there is no undo.
 - **`prisma migrate reset` must never be used as automatic recovery for a failed first

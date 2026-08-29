@@ -213,14 +213,19 @@ Mark a check "not applicable" only with a reason. Never tick one that was not ru
 
 ```bash
 prisma migrate diff \
-  --from-schema-datasource prisma/schema.prisma \
+  --from-config-datasource \
   --to-schema-datamodel prisma/schema.prisma \
   --exit-code
 ```
 
-Both sides point at the same file deliberately: `--from-schema-datasource` reads its
-`datasource` block to inspect the live database, and `--to-schema-datamodel` reads its models.
-The command compares the database against the schema.
+The two sides come from different places deliberately: `--from-config-datasource` takes no
+argument and connects to the live database using the connection in `prisma.config.mjs`, while
+`--to-schema-datamodel` reads the models out of the schema file. The command compares the
+database against the schema.
+
+Prisma 7 removed the older `--from-schema-datasource` and `--to-schema-datasource` flags, along
+with `--from-url` and `--to-url`, because connection details now live in the config file rather
+than in the schema. A command copied from a pre-7 example will fail on the flag, not on drift.
 
 Distinguish the two failure kinds, because they need opposite responses:
 

@@ -1,0 +1,183 @@
+// SCC Delicious baseline schema.
+//
+// Three things this file cannot express. All are added as raw SQL to the initial migration:
+//
+//   CHECK (stock_quantity >= 0) on foods       architecture constraint 15
+//   CHECK (quantity > 0)        on cart_items  architecture core entity list
+//   ALTER TABLE ... ENABLE ROW LEVEL SECURITY  on every table below, with no policies,
+//                                              per .cursor/rules/database.mdc
+//
+// Row-level security keeps Supabase's Data API away from these tables while leaving Prisma
+// unaffected, because the role it connects as owns them. A constraint described only in a
+// comment is not enforcement, so none of the above is complete until the migration carries it.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma 7 no longer accepts url or directUrl here. The migration connection lives in
+// prisma.config.mjs; the application's pooled connection is supplied at client construction.
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  STUDENT
+  ADMIN
+
+  @@map("role")
+}
+
+enum OrderStatus {
+  PLACED
+  PREPARING
+  READY
+  COMPLETED
+  CANCELLED
+
+  @@map("order_status")
+}
+
+/// No failed or pending state exists in v1: payment is simulated inside the checkout
+/// transaction, so a failure rolls the transaction back and leaves no payment row at all.
+enum PaymentStatus {
+  SUCCEEDED
+
+  @@map("payment_status")
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         Role
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  cart   Cart?
+  orders Order[]
+
+  @@map("users")
+}
+
+model Shop {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  foods  Food[]
+  carts  Cart[]
+  orders Order[]
+
+  @@map("shops")
+}
+
+model Food {
+  id            String   @id @default(uuid()) @db.Uuid
+  shopId        String   @map("shop_id") @db.Uuid
+  name          String
+  priceMinor    Int      @map("price_minor")
+  stockQuantity Int      @map("stock_quantity")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  shop       Shop        @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+
+  @@index([shopId])
+  @@map("foods")
+}
+
+model Cart {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @map("user_id") @db.Uuid
+
+  /// The cart holds items from one shop at a time. Null while the cart is empty. Every cart
+  /// item's food must belong to this shop — a two-table rule no constraint can express, so the
+  /// cart service owns it.
+  shopId String? @map("shop_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shop  Shop?      @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  items CartItem[]
+
+  @@index([shopId])
+  @@map("carts")
+}
+
+/// Quantity only. A cart item never stores a price: totals are always recomputed from the
+/// current food price.
+model CartItem {
+  id        String   @id @default(uuid()) @db.Uuid
+  cartId    String   @map("cart_id") @db.Uuid
+  foodId    String   @map("food_id") @db.Uuid
+  quantity  Int
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  cart Cart @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  food Food @relation(fields: [foodId], references: [id], onDelete: Cascade)
+
+  @@unique([cartId, foodId])
+  @@index([foodId])
+  @@map("cart_items")
+}
+
+model Order {
+  id             String      @id @default(uuid()) @db.Uuid
+  userId         String      @map("user_id") @db.Uuid
+  shopId         String      @map("shop_id") @db.Uuid
+  status         OrderStatus
+  totalMinor     Int         @map("total_minor")
+  idempotencyKey String      @unique @map("idempotency_key")
+  placedAt       DateTime    @default(now()) @map("placed_at") @db.Timestamptz(6)
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user    User        @relation(fields: [userId], references: [id], onDelete: Restrict)
+  shop    Shop        @relation(fields: [shopId], references: [id], onDelete: Restrict)
+  items   OrderItem[]
+  payment Payment?
+
+  @@index([userId])
+  @@index([shopId])
+  @@map("orders")
+}
+
+/// Immutable once written, and deliberately without an updated_at column for that reason. The
+/// food reference is nullable and the descriptive and price columns are copies taken at purchase
+/// time, so removing a food leaves this row intact and the order still knows its shop.
+model OrderItem {
+  id                     String  @id @default(uuid()) @db.Uuid
+  orderId                String  @map("order_id") @db.Uuid
+  foodId                 String? @map("food_id") @db.Uuid
+  foodNameSnapshot       String  @map("food_name_snapshot")
+  unitPriceMinorSnapshot Int     @map("unit_price_minor_snapshot")
+  quantity               Int
+  lineTotalMinor         Int     @map("line_total_minor")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  food  Food? @relation(fields: [foodId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([foodId])
+  @@map("order_items")
+}
+
+model Payment {
+  id          String        @id @default(uuid()) @db.Uuid
+  orderId     String        @unique @map("order_id") @db.Uuid
+  status      PaymentStatus
+  amountMinor Int           @map("amount_minor")
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@map("payments")
+}
