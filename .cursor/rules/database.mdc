@@ -45,6 +45,14 @@ alwaysApply: false
 - Database credentials must only exist in server-side environment variables.
 - Never expose database credentials to frontend code.
 - Never commit `.env`.
+- Supabase project API keys are not used. The application reaches Supabase only as PostgreSQL
+  through Prisma.
+- Every application table must have row-level security enabled with no policies. Tables created
+  by Prisma migrations do not get it by default, and an unprotected table in an exposed schema is
+  reachable through Supabase's Data API by anyone holding the project's publishable key, which
+  bypasses Express and the service layer where authorization actually lives. The role Prisma
+  connects as owns the tables and is unaffected.
+- Enable row-level security in a migration, never through the Supabase dashboard.
 
 ## Changes
 

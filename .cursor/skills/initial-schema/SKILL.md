@@ -174,6 +174,10 @@ Write `backend/prisma/schema.prisma`. One file, one coherent baseline.
 - **Prisma schema cannot express a `CHECK` constraint.** List every check the invariants require
   now; they are added as raw SQL in Phase 5. A check constraint that is only described in a
   document is not enforcement.
+- **Prisma schema cannot express row-level security either.** `database.mdc` requires it enabled
+  with no policies on every table, so that Supabase's Data API cannot reach them with the
+  project's publishable key. List those statements now; they are added as raw SQL in Phase 5
+  alongside the checks.
 
 ## Phase 5 — Create the initial migration
 
@@ -234,6 +238,7 @@ Read the migration SQL before treating it as done. Confirm, item by item:
 - every foreign key carries the delete behaviour decided in Phase 3
 - every unique constraint and index from Phase 3 is present
 - every check constraint from Phase 4 is present
+- every table has row-level security enabled, with no policies
 - nothing drops anything
 
 This is the last cheap moment to catch a wrong delete rule. After data exists, correcting one
@@ -260,6 +265,8 @@ run and its output read:
 - [ ] delete behaviour          -> deleting a parent behaves as designed, including that
                                    historical rows survive with their copied values
 - [ ] unique constraints        -> a duplicate is actually rejected
+- [ ] row-level security        -> enabled on every table, and a Data API request with the
+                                   publishable key is actually refused while Prisma still reads
 - [ ] prisma generate           -> succeeds; where a typecheck is configured, the project
                                    typechecks
 ```

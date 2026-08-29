@@ -9,13 +9,24 @@ SCC Delicious uses Supabase PostgreSQL through two different connection paths:
 
 | Purpose | Variable | Path |
 |---|---|---|
-| Running application queries | `DATABASE_URL` | Supabase connection pooler, transaction mode |
-| Running Prisma migrations | `DIRECT_URL` | Direct database connection |
+| Running application queries | `DATABASE_URL` | Supabase connection pooler, **transaction** mode, port 6543 |
+| Running Prisma migrations | `DIRECT_URL` | Direct database connection, or the pooler in **session** mode, port 5432 |
 
 **Why two.** A pooler in transaction mode multiplexes many clients onto few server connections,
 which is what the application wants but breaks migrations: migrations need session-level
 operations, advisory locks, and a stable connection for the duration of the change. Direct
 connections support that but are limited in number, so they are unsuitable for serving traffic.
+
+**What counts as a valid `DIRECT_URL`.** Either endpoint works, because both hold a session for
+its lifetime:
+
+- `db.<project-ref>.supabase.co:5432` — the true direct connection. It is **IPv6-only** unless
+  the project has the paid IPv4 add-on, so on a host without IPv6 it will not resolve at all.
+- `<region>.pooler.supabase.com:5432` — the pooler in session mode, same host as the transaction
+  pooler but a different port, and the username takes the `postgres.<project-ref>` form.
+
+What is never valid for migrations is transaction mode on port 6543. The distinction that matters
+is session versus transaction, not pooled versus direct.
 
 The Prisma `datasource` block reads the pooled URL as its `url` and the direct URL as
 `directUrl`, so `prisma migrate` and `prisma db push` use the direct connection automatically
@@ -44,6 +55,14 @@ migration history entirely.
 
 **Everything fails, including psql**
 A paused free-tier Supabase project. Resume it and retry before debugging anything else.
+
+**Connections to both 5432 and 6543 time out, while HTTPS to the same network works**
+The network blocks outbound database ports. Restricted corporate networks commonly permit 80 and
+443 only. Confirm by checking that an HTTPS fetch succeeds from the same shell; if it does, this
+is filtering rather than a Supabase or credential problem, and no connection string change will
+fix it. Note that a raw TCP handshake may appear to succeed through a local proxy while the
+PostgreSQL protocol still times out, so treat "the port is open" as weak evidence and rely on an
+actual query.
 
 ## Rules that always apply
 

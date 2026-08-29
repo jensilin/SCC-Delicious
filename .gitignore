@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Environment files hold real credentials and are never committed.
+# .env.example is committed and holds variable names with placeholder values.
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+build/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
