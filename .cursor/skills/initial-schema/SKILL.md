@@ -214,10 +214,10 @@ the migration.
 
 ```bash
 # 1. Generate the SQL. Neither side touches a database: --from-empty is a computation and
-#    --to-schema-datamodel reads the schema file.
+#    --to-schema reads the schema file.
 prisma migrate diff \
   --from-empty \
-  --to-schema-datamodel prisma/schema.prisma \
+  --to-schema prisma/schema.prisma \
   --script > prisma/migrations/<timestamp>_init/migration.sql
 
 # 2. Add the CHECK constraints and the row-level security statements to that file by hand.
