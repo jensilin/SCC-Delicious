@@ -678,6 +678,11 @@ next addition come from anywhere.
 **No cart operation reads or writes stock.** This follows from the cart not reserving inventory:
 more of a food may sit in a cart than the shop has, and the shortfall is reported at checkout.
 
+# Checkout and Payment
+
+**Status: design only.** The design below is settled and complete, but no checkout endpoint
+exists yet. Nothing in this section describes working software.
+
 **Checkout revalidates price and inventory on the server.** Nothing about the money or the
 stock position is taken from the request. The server recomputes every line total and the order
 total from current food prices and confirms availability at that moment.
@@ -719,6 +724,205 @@ One structural caveat to be aware of before any real provider is ever introduced
 gateway is a network call that cannot live inside a database transaction and may settle after
 the HTTP response. Adopting one would require revisiting this single-transaction shape. That is
 an accepted consequence of keeping v1 simple, not an oversight.
+
+## Settled checkout parameters
+
+The rules above describe what checkout must guarantee; they did not say what its endpoint looks
+like. These were settled by the project owner during the checkout design review, before any
+implementation existed, and are recorded here for the same reason the cart parameters are.
+
+**Checkout is `STUDENT`-only.** [Authorization](#authorization) grants "place orders" to that role
+and grants `ADMIN` only the reading and advancing of orders, so `authenticate` and
+`requireRole("STUDENT")` attach once at router level and an `ADMIN` receives `403 FORBIDDEN`.
+
+**The student router is mounted first at `/api/v1/orders`**, so that the admin order router the
+next phase adds can share the base path behind its own `requireRole("ADMIN")`. This is the same
+split, and the same load-bearing mounting order, as
+[Catalogue Administration](#catalogue-administration): a role check mounted first applies to
+everything entering the router, so an admin router mounted ahead of this one would close checkout
+to students. The same consequence follows too — an unmatched path beneath `/api/v1/orders` will
+reach the admin router's role check, so a `STUDENT` sees `403` where they would otherwise see
+`404`.
+
+| Endpoint | Status | Effect |
+| --- | --- | --- |
+| `POST /api/v1/orders` | `201` | Creates an order from the caller's cart |
+| `POST /api/v1/orders` | `200` | Replays the order an earlier request with this key created |
+
+**The idempotency key travels in a required `Idempotency-Key` request header, and the request has
+no body.** Every value checkout uses — the cart, the shop, the quantities, the prices, the buyer —
+is server state, so a body field would be the only place in this API where the body carries
+transport metadata rather than resource data. The API already carries per-request metadata outside
+the body, in the `Authorization` header and the refresh cookie.
+
+*A consequence worth knowing:* the validation middleware validates any request property named by
+its schema map, so a header schema needs no new middleware capability, and the CORS configuration
+names no explicit header allowlist, so a custom request header needs no change there either.
+
+| Rule | Value |
+| --- | --- |
+| Required | Yes; an absent header is `400 VALIDATION_ERROR` |
+| Characters | `^[A-Za-z0-9_-]+$` |
+| Length | 16 to 128 characters |
+| Case | Significant; `ABC` and `abc` are different keys |
+| Whitespace | Rejected by the character rule; never trimmed, never normalised |
+
+The key is **opaque to the server**, which only ever compares it for equality. A UUID is not
+required. *Why the bounds are what they are:* the value sits in a unique btree index, which cannot
+hold an arbitrarily long entry, so the ceiling is derived from storage rather than invented — the
+same reasoning as the cart's quantity bound. The floor matters because the constraint is global: a
+one-character key would be consumed table-wide by whoever used it first. The client generates the
+key from a cryptographically random source, once per checkout attempt, and reuses it across
+retries; a client that regenerates it inside its own retry loop defeats the mechanism entirely, and
+no server-side design compensates for that.
+
+**`orders.idempotency_key` stays globally unique, and every lookup is scoped to the caller.** The
+two are not in tension: the unique index is the concurrency arbiter, and the scoped read is the
+ownership rule. A lookup keyed on `idempotencyKey` alone is prohibited, because it loads a row that
+may belong to someone else, and a later change to the code around it could then return that row.
+Ownership is established by the query, exactly as [Authorization](#authorization) requires, so no
+order belonging to another user is ever read into memory at all.
+
+**A new key creates and answers `201`; a same-user replay answers `200`** with the identical order
+and performs no writes — no stock movement, no cart change, no timestamp touched. *Why not repeat
+the `201`:* the code must be a true statement about what happened, and nothing was created. This is
+the same judgement that makes an empty cart a `200` rather than a `404`. The replay body is
+byte-identical by reconstruction rather than by storing the original response, which is possible
+only because every field of the response comes from an immutable column.
+
+**A key already belonging to another user's order is `409 IDEMPOTENCY_KEY_CONFLICT`**, and the
+response discloses nothing about that order — not its id, owner, shop, total, status, or age. This
+is the case the global constraint made possible and the reason the scoped lookup is mandatory.
+
+**A failed checkout leaves the key free.** The transaction rolled back, so the row never existed. A
+later retry with the same key is an ordinary fresh attempt. Idempotency deduplicates successes, not
+failures, which is what makes retrying after `409 INSUFFICIENT_STOCK` meaningful.
+
+**Two concurrent requests with the same key from the same user produce exactly one order.** The
+first insert holds the unique index; the second blocks on it, then fails with a unique violation
+that aborts its transaction and rolls back everything it had done, including its stock deductions.
+The loser then repeats the scoped lookup **outside** the aborted transaction — a failed statement
+aborts a PostgreSQL transaction and nothing can be recovered inside one — and either finds the
+committed order and replays `200`, or finds nothing and answers `409 IDEMPOTENCY_KEY_CONFLICT`.
+
+### The checkout transaction
+
+One Prisma interactive transaction at PostgreSQL's default read-committed isolation. Every
+guarantee below comes from a unique index, a conditional update, or a row lock; none comes from the
+isolation level or from coordination in JavaScript.
+
+1. Look the key up, scoped to the caller. Found means replay: return that order, having written
+   nothing.
+2. Load the caller's cart. No row means `409 CART_EMPTY`.
+3. Take the cart row lock by writing its shop reference back unchanged — the same lock, taken the
+   same way, that [Cart](#cart) already uses to stop an addition interleaving with a removal.
+4. Read the cart lines under that lock. They are the source of truth for this attempt.
+5. No lines means `409 CART_EMPTY`.
+6. Read each food's current name and price.
+7. Compute each line total and the order total from those live prices.
+8. Create the order — `PLACED`, the caller's id, the cart's shop, the key, the total — with its
+   items as part of the same write.
+9. For every line, in ascending `foodId` order, call the shared conditional decrement with a
+   negative delta.
+10. Create the payment: `SUCCEEDED`, for exactly the order's total.
+11. Delete the cart lines conditionally on the `foodId` and `quantity` values read in step 4.
+12. A deleted count other than the expected number of lines means `409 CART_MODIFIED`.
+13. Set the cart's shop reference to null.
+
+Three orderings there are deliberate. **The order is inserted before any stock moves**, so a
+duplicate key is refused before a single food row has been locked; nothing is visible outside the
+transaction until commit, so the apparent inversion costs nothing. **Stock deltas are applied in
+`foodId` order**, so two checkouts sharing two foods cannot acquire the same locks in opposite
+orders and deadlock. **Cart clearing is the final write**, so the cart empties only if everything
+before it succeeded.
+
+**Stock deduction reuses the conditional decrement in
+[Inventory and Concurrency](#inventory-and-concurrency)**; checkout does not carry a second
+implementation of it. When a decrement affects zero rows, one scoped probe distinguishes the two
+possible causes: the food still exists and its stock was short, which is `409 INSUFFICIENT_STOCK`,
+or the food has been deleted mid-transaction, which is `404 NOT_FOUND`.
+
+`INSUFFICIENT_STOCK` carries `details` naming the food that could not be supplied, as
+`{ foodId, name, message }`. *Why a shape of its own:* the frontend has to highlight the line that
+failed, which needs the food's identity rather than the name of a request field — and the cart not
+reserving inventory is precisely what makes this rejection ordinary enough to deserve a clear
+presentation.
+
+**A cart modified while checkout is reading it is `409 CART_MODIFIED`, and the whole attempt rolls
+back.** The cart row lock already serialises checkout against adding, removing, and clearing, all
+of which write the cart row. Changing a line's quantity does not, so the conditional delete in step
+11 is what catches it: a line is removed only if it still holds exactly the quantity that was just
+written into an order item. *Why this is worth an error code of its own:* it is the guarantee that
+no cart line can disappear without having been ordered. Deliberately, the quantity endpoint is
+**not** given the cart row lock to make this case impossible — the conditional delete is the
+cheaper mechanism and it also protects against any future cart write that forgets the lock.
+
+**A missing cart row and an empty cart are the same answer**, `409 CART_EMPTY`, with no order, no
+payment, no stock movement, and no cart mutation. The cart is already read as empty rather than
+missing everywhere else, and checkout does not contradict that.
+
+**Order items snapshot the food's current name and price**, the cart's quantity, and their product.
+The order total is the sum of the line totals, and the payment amount is assigned from that total
+rather than recomputed — a second arithmetic path could disagree with the first, and the three
+figures agreeing is a tested property rather than two calculations hoping to match.
+
+**Every checkout-created order is `PLACED`.** The column has no database default, so the value is
+written as a literal, and no request field can influence it.
+
+**The response carries the order and its items, from an explicit selection in the service rather
+than a raw database row:**
+
+```json
+{
+  "id": "…", "shopId": "…", "status": "PLACED",
+  "totalMinor": 1450, "placedAt": "…",
+  "items": [
+    { "foodId": "…", "name": "Chicken Roll", "priceMinor": 450,
+      "quantity": 2, "lineTotalMinor": 900 }
+  ]
+}
+```
+
+Items are ordered by the name snapshot, matching how the cart orders its lines, and `foodId` is
+null once that food has been deleted. The item's unit price is exposed as **`priceMinor`**, the
+same key the cart line uses, so one client component can render both; the column behind it remains
+`unit_price_minor_snapshot`. The response never joins to `foods`, which is what keeps a past order
+truthful after a rename or a reprice — and is also what makes a replay byte-identical. It exposes
+no `userId`, no payment, no idempotency key, no `createdAt` or `updatedAt`, and no shop name.
+
+**Checkout establishes the ownership pattern the later order endpoints follow.** A student's single
+order is read as a scoped `findFirst` on the order id *and* the caller's id, never as a lookup by
+id followed by a comparison; a student's list is scoped by the caller's id. This is the fail-safe
+construction [Authorization](#authorization) requires, and checkout's own idempotency lookup is its
+first instance.
+
+### Checkout error vocabulary
+
+| Code | Status | Meaning |
+| --- | --- | --- |
+| `VALIDATION_ERROR` | `400` | The idempotency key is absent or malformed |
+| `UNAUTHENTICATED` | `401` | No usable access token |
+| `FORBIDDEN` | `403` | An `ADMIN` attempted to place an order |
+| `NOT_FOUND` | `404` | A food was deleted during the transaction |
+| `CART_EMPTY` | `409` | No cart, or a cart with no lines |
+| `INSUFFICIENT_STOCK` | `409` | A food cannot supply the ordered quantity |
+| `IDEMPOTENCY_KEY_CONFLICT` | `409` | The key already belongs to another user's order |
+| `CART_MODIFIED` | `409` | The cart changed between being read and being cleared |
+
+### Concurrency this design must survive
+
+Reasoning is not evidence here; each of these is a test the phase owes.
+
+| Scenario | Required outcome |
+| --- | --- |
+| Same user, same key, concurrently | One order; one `201`, one `200`; stock deducted once |
+| Two users, same key | One order; the second user gets `409` and learns nothing |
+| Ten users, one food, stock five | Five `201`, five `409`, final stock zero |
+| Concurrent checkouts over several shared foods | No deadlock; a `40P01` means the lock ordering is wrong, not that the test should be weakened |
+| Checkout against an admin stock delta | Serialised through the one conditional decrement; stock never negative |
+| Checkout against a food deletion | The order item survives with a null food reference and its snapshot intact |
+| Checkout against a cart write | Adding, removing, and clearing block on the cart row lock; a quantity change is caught by the conditional delete |
+| Two foods, the second short of stock | Nothing at all: no order, no items, no payment, both stock levels unchanged, cart untouched |
 
 # Order Management
 
@@ -792,12 +996,18 @@ The vocabulary in use, which the frontend may match on:
 | `NOT_FOUND` | `404` | No route matches the request |
 | `EMAIL_ALREADY_REGISTERED` | `409` | Registration for an address that already has an account |
 | `CART_SHOP_MISMATCH` | `409` | Adding a food from a shop other than the one the cart holds |
+| `CART_EMPTY` | `409` | Checkout with no cart, or a cart with no lines |
+| `CART_MODIFIED` | `409` | The cart changed between checkout reading it and clearing it |
 | `SHOP_HAS_ORDERS` | `409` | Deleting a shop that past orders still reference |
 | `INSUFFICIENT_STOCK` | `409` | A stock delta that would leave the quantity negative |
+| `IDEMPOTENCY_KEY_CONFLICT` | `409` | A checkout key that already belongs to another user's order |
 | `INTERNAL_ERROR` | `500` | An unhandled fault; the message is always generic |
 
-A `VALIDATION_ERROR` — and only a validation error — carries `details`, an array of
-`{ field, message }` naming every field that failed. A `500` never carries detail of any kind.
+A `VALIDATION_ERROR` carries `details`, an array of `{ field, message }` naming every field that
+failed. Exactly one business error carries `details` as well, in a shape of its own:
+`INSUFFICIENT_STOCK` names the food that could not be supplied as `{ foodId, name, message }`,
+because what the client has to act on is a line of the cart rather than a field of the request. No
+other code carries detail, and a `500` never carries any.
 
 **Endpoint families** are grouped so that role middleware attaches once per router rather than
 once per handler: authentication, shop and food browsing, cart, orders, and administration.
@@ -905,7 +1115,10 @@ Scenarios treated as mandatory rather than optional:
 4. Checkout ignores a client-supplied price and uses the server-side price.
 5. Concurrent checkouts for the last unit of stock result in exactly one success.
 6. A repeated checkout with the same idempotency key produces one order, not two.
-7. A failed payment leaves no order and no stock movement.
+7. A forced failure mid-checkout leaves no order, no order items, no payment row, no stock
+   movement, and the cart unchanged. *Stated as a forced failure rather than as a failed payment,
+   which is unreachable by construction and is how the data invariants reference already phrases
+   it.*
 8. An order's line totals sum to its order total and to its payment amount.
 
 **Tooling.** Tests run on Node's built-in runner, `node:test`, and integration tests drive HTTP
@@ -1037,19 +1250,6 @@ restructuring what is described above.
 The following are genuinely undecided. They are recorded so that they are settled explicitly
 rather than by accident during implementation. Items that block a specific phase are marked.
 
-**Blocks checkout**
-
-- Where the idempotency key travels — a request header or a body field — and what status a replayed
-  key returns alongside the order it already created.
-- What happens when a key is reused by a *different* user. `orders.idempotency_key` is unique
-  across the whole table rather than per user, so returning the existing order for a key without
-  scoping the lookup to the caller would hand one user another's order. Found while reviewing the
-  phase; the constraint is deliberate but the lookup rule it implies was never stated.
-- How a simulated payment can fail at all. Payment is described as always succeeding inside the
-  transaction and `PaymentStatus` permits only `SUCCEEDED`, while mandatory test 7 requires that a
-  failed payment leave no order and no stock movement. Either the simulation gains a way to be made
-  to fail for that test, or the test is restated.
-
 **Blocks order management**
 
 - The permitted status transitions, and who may perform each.
@@ -1079,6 +1279,19 @@ the document. Each was resolved by the project owner, not assumed during impleme
 - **The payment status list is `SUCCEEDED` alone.** This was never recorded as an open question:
   the column existed with no defined values, which was found during a schema audit. See
   [Checkout and Payment](#checkout-and-payment).
+- **The checkout endpoint parameters** — a `STUDENT`-only `/api/v1/orders` router mounted ahead of
+  the future admin one, a required `Idempotency-Key` header of 16 to 128 opaque characters, `201`
+  on creation against `200` on a same-user replay, `409 IDEMPOTENCY_KEY_CONFLICT` for a key owned
+  by someone else, `409 CART_EMPTY`, `409 CART_MODIFIED`, and `INSUFFICIENT_STOCK` details naming
+  the food — were resolved by the project owner during the checkout design review, before any
+  implementation existed. The first two of these were previously listed as blocking checkout. See
+  [Settled checkout parameters](#settled-checkout-parameters).
+- **A simulated payment cannot fail, and mandatory test 7 is stated as a forced failure mid-checkout
+  rather than as a failed payment.** Previously listed as blocking checkout, on the grounds that
+  `PaymentStatus` permits only `SUCCEEDED` while the test demanded a payment failure. The data
+  invariants reference already phrased its verification as a forced failure, so the resolution was
+  to align this document with it rather than to build a failure switch that exists only to be
+  flipped by a test. See [Testing Strategy](#testing-strategy).
 - **Tests run on `node:test`.** Previously listed as blocking the tests. See
   [Testing Strategy](#testing-strategy).
 - **The test database is a local PostgreSQL container**, reached through `TEST_DATABASE_URL` and
