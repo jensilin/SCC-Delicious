@@ -5,8 +5,8 @@ web application. It is an architecture decision document. It describes what we i
 build and why. It does not describe anything that has been built.
 
 **Status: partially implemented.** The database schema and its migration, the Express
-application foundation, the health endpoint, authentication, read-only catalogue browsing, and the
-cart are built and covered by tests. Catalogue administration, checkout, orders, payment, and the
+application foundation, the health endpoint, authentication, read-only catalogue browsing, catalogue
+administration, and the cart are built and covered by tests. Checkout, orders, payment, and the
 entire frontend are design only. Unless a section says otherwise, read it as the intended design
 rather than as a description of working software.
 
@@ -489,9 +489,96 @@ order the database may return rows in any sequence.
 Prices are returned as the integer minor units they are stored in, and the server never formats
 money.
 
-**This phase is read-only.** No endpoint creates, updates, or deletes a shop or a food. Until the
-catalogue administration phase builds those endpoints, catalogue data enters the database only
-through direct access.
+**This phase is read-only.** No endpoint creates, updates, or deletes a shop or a food. Those
+endpoints belong to [Catalogue Administration](#catalogue-administration), which is a separate
+phase and a separate router.
+
+# Catalogue Administration
+
+Administration is the write half of the catalogue: creating, changing, and removing shops and
+foods, and moving stock. Every endpoint here requires `ADMIN`, which is the first place the role
+middleware guards real resources over HTTP.
+
+**The administrative routes share the browsing base path and live in a second router.** Both
+`shopRoute` and `shopAdminRoute` are mounted at `/api/v1/shops`; the first declares the `GET`
+routes and attaches only `authenticate`, the second declares the writes and attaches
+`authenticate` and `requireRole("ADMIN")` once each at router level.
+
+*Why two routers rather than one:* the API section requires role middleware to attach once per
+router precisely so no individual route can be left unguarded, and browsing is open to both roles
+while writing is not. One router cannot hold both postures without a per-handler role check, and a
+separate `/api/v1/admin/shops` family would give the same resource two URLs. Two routers over one
+path keeps one URL per resource and one role rule per router.
+
+*The mounting order is load-bearing:* browsing is mounted first. Were the administrative router
+first, its router-level `requireRole("ADMIN")` would run for every `GET` as well and a `STUDENT`
+could not browse. A consequence to know about: a write request passes through the browsing router,
+matches nothing there, and falls through, so its token is verified twice — a negligible cost — and
+a request to an unmatched path beneath `/api/v1/shops` reaches the administrative router's role
+check, so a `STUDENT` sees `403` where they would otherwise have seen `404`.
+
+| Endpoint | Status | Effect |
+| --- | --- | --- |
+| `POST /api/v1/shops` | `201` | Creates a shop |
+| `PATCH /api/v1/shops/:shopId` | `200` | Updates a shop |
+| `DELETE /api/v1/shops/:shopId` | `204` | Deletes a shop |
+| `POST /api/v1/shops/:shopId/foods` | `201` | Creates a food in that shop |
+| `PATCH /api/v1/shops/:shopId/foods/:foodId` | `200` | Updates that food |
+| `DELETE /api/v1/shops/:shopId/foods/:foodId` | `204` | Deletes that food |
+| `PATCH /api/v1/shops/:shopId/foods/:foodId/stock` | `200` | Moves that food's stock by a delta |
+
+**Foods are addressed beneath their shop for writes exactly as they are for reads.** Every food
+write is scoped by the shop in the path, so a food whose id is known but which belongs to another
+shop is not found rather than modified. This is the same scoping rule browsing established, and it
+is the half that matters most: reading the wrong food leaks, writing it corrupts.
+
+## Stock
+
+**Stock is set absolutely when a food is created and thereafter moves only by signed delta**,
+through its own endpoint. *Why the two differ:* an absolute value written later is computed from a
+figure the administrator read some time ago, so it silently erases any checkout that decremented
+in between. A delta says what changed rather than what the total should now be, which is the only
+form that composes with concurrent writers.
+
+**The delta is applied as a single conditional update** that matches the row only when the
+resulting stock would not be negative, and treats zero affected rows as insufficient stock. There
+is no read of the current quantity anywhere in the path. This is the same mechanism constraint 14
+requires for checkout, and the helper is written so the order-management phase can call it inside
+checkout's transaction for both consuming and restoring stock.
+
+The database `CHECK (stock_quantity >= 0)` remains the final boundary beneath it, and is exercised
+by a test that attempts a violating write directly rather than through the endpoint.
+
+**A delta that would drive stock below zero is refused with `409 INSUFFICIENT_STOCK`.** The code is
+distinct because it describes a state the caller can resolve, not a malformed request.
+
+## Deleting
+
+**Deleting a shop that has orders is refused with `409 SHOP_HAS_ORDERS`.** `Order.shop` is declared
+`onDelete: Restrict`, so the database refuses the delete; the service translates that refusal into
+a deliberate response rather than letting it surface as a generic `500`. A shop with no orders is
+deleted, taking its foods with it by cascade, and any cart that named it has its shop reference set
+to null.
+
+**Deleting a food succeeds even when past orders contain it.** `OrderItem.food` is `onDelete: SetNull`
+and the descriptive and price columns are snapshots, so the order item survives intact and the order
+still knows its shop through its own direct reference. Cart items referencing the food are removed
+by cascade, because a cart is transient working state.
+
+## What this phase deliberately does not add
+
+Three capabilities were considered and deferred, each because adopting it would require a migration
+that the phase does not otherwise need:
+
+- **Shop names remain non-unique.** Nothing in this design asks for uniqueness, and two food courts
+  can reasonably hold two stalls of the same name.
+- **No food availability flag.** Still open under [Future Decisions](#future-decisions); stock
+  quantity is the only availability signal in v1.
+- **No shop visibility or lifecycle state.** Also still open there.
+
+**Stock cannot be changed through the general food update endpoint.** A `stockQuantity` sent in a
+`PATCH` body is discarded by the schema before any code reads it, the same way a `role` sent to
+registration is, and a test asserts the stored quantity does not move.
 
 # Cart
 
@@ -705,6 +792,8 @@ The vocabulary in use, which the frontend may match on:
 | `NOT_FOUND` | `404` | No route matches the request |
 | `EMAIL_ALREADY_REGISTERED` | `409` | Registration for an address that already has an account |
 | `CART_SHOP_MISMATCH` | `409` | Adding a food from a shop other than the one the cart holds |
+| `SHOP_HAS_ORDERS` | `409` | Deleting a shop that past orders still reference |
+| `INSUFFICIENT_STOCK` | `409` | A stock delta that would leave the quantity negative |
 | `INTERNAL_ERROR` | `500` | An unhandled fault; the message is always generic |
 
 A `VALIDATION_ERROR` — and only a validation error — carries `details`, an array of
@@ -791,8 +880,8 @@ many deployed environments exist beyond that remains open.
 # Testing Strategy
 
 This section states what testing consists of. Application bootstrap, the health endpoint,
-authentication, and read-only catalogue browsing are covered so far; anything below that is not
-marked as covered describes intent rather than existing coverage.
+authentication, read-only catalogue browsing, catalogue administration, and the cart are covered so
+far; anything below that is not marked as covered describes intent rather than existing coverage.
 
 - **Unit tests** for pure logic: total and line-item calculation, order status transition
   rules, and validation schemas. *Why here:* these are fast, deterministic, and cover the
@@ -807,11 +896,12 @@ marked as covered describes intent rather than existing coverage.
 Scenarios treated as mandatory rather than optional:
 
 1. Registration always produces `STUDENT` and cannot assign `ADMIN`. **Covered.**
-2. A caller cannot read or modify another user's cart or orders.
+2. A caller cannot read or modify another user's cart or orders. *Partly covered:* the cart half
+   is tested — another user's cart cannot be read, changed, cleared, or removed from. Orders do
+   not exist yet.
 3. Administrative endpoints reject a `STUDENT` caller, and reject mismatched parent-child
-   resource pairs. *Partly covered:* the role middleware is unit-tested, but v1 has no
-   administrative endpoint yet, so nothing exercises it over HTTP. That arrives with the first
-   admin phase.
+   resource pairs. **Covered** by the catalogue administration phase, over HTTP, for every write
+   endpoint.
 4. Checkout ignores a client-supplied price and uses the server-side price.
 5. Concurrent checkouts for the last unit of stock result in exactly one success.
 6. A repeated checkout with the same idempotency key produces one order, not two.
@@ -947,6 +1037,19 @@ restructuring what is described above.
 The following are genuinely undecided. They are recorded so that they are settled explicitly
 rather than by accident during implementation. Items that block a specific phase are marked.
 
+**Blocks checkout**
+
+- Where the idempotency key travels — a request header or a body field — and what status a replayed
+  key returns alongside the order it already created.
+- What happens when a key is reused by a *different* user. `orders.idempotency_key` is unique
+  across the whole table rather than per user, so returning the existing order for a key without
+  scoping the lookup to the caller would hand one user another's order. Found while reviewing the
+  phase; the constraint is deliberate but the lookup rule it implies was never stated.
+- How a simulated payment can fail at all. Payment is described as always succeeding inside the
+  transaction and `PaymentStatus` permits only `SUCCEEDED`, while mandatory test 7 requires that a
+  failed payment leave no order and no stock movement. Either the simulation gains a way to be made
+  to fail for that test, or the test is restated.
+
 **Blocks order management**
 
 - The permitted status transitions, and who may perform each.
@@ -1012,6 +1115,13 @@ the document. Each was resolved by the project owner, not assumed during impleme
   and `409 CART_SHOP_MISMATCH` for a food from another shop — were never recorded as open questions:
   the architecture described what the cart is without specifying its API, which was found during the
   cart phase. See [Settled cart parameters](#settled-cart-parameters).
+- **The catalogue administration parameters** — a second `ADMIN`-only router sharing the
+  `/api/v1/shops` base path, stock set absolutely at creation and moved only by signed delta
+  thereafter, `409 SHOP_HAS_ORDERS` when a shop with orders is deleted, and `409 INSUFFICIENT_STOCK`
+  for a delta that would go negative — were resolved by the project owner before that phase was
+  implemented. The three capabilities deliberately not added with it are shop-name uniqueness, a
+  food availability flag, and a shop visibility state; the latter two remain open below. See
+  [Catalogue Administration](#catalogue-administration).
 
 The permitted transitions between order statuses remain open and are listed above, under order
 management.
@@ -1048,10 +1158,11 @@ with no supported way for a shop or food to come into existence. Placing it afte
 the read shape before anything writes to it, and it unblocks the cart phase, which needs real foods
 to add.
 
-**The cart was in the event built before catalogue administration**, which remains the one phase
-still owed from the ordering above. Nothing in the cart depends on it: the cart needs foods to
-exist, not endpoints that create them, and its tests seed the catalogue directly through Prisma as
-the browsing tests already did.
+**The cart was in the event built before catalogue administration**, and administration followed
+it rather than being dropped. Nothing in the cart depended on it: the cart needs foods to exist,
+not endpoints that create them, and its tests seed the catalogue directly through Prisma as the
+browsing tests already did. Both phases are now complete, so the ordering above is once again the
+order still to be followed — checkout next, then order management.
 
 Two commitments follow from this and apply to all future work on the project. Documentation and
 status reports must distinguish functionality that has been implemented from functionality that

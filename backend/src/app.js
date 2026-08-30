@@ -8,6 +8,7 @@ const { notFound } = require("./middleware/not-found.middleware");
 const authRoute = require("./routes/auth.route");
 const cartRoute = require("./routes/cart.route");
 const healthRoute = require("./routes/health.route");
+const shopAdminRoute = require("./routes/shop-admin.route");
 const shopRoute = require("./routes/shop.route");
 
 // Construction only. Nothing here listens on a port, so a test can exercise the application
@@ -47,6 +48,12 @@ function createApp() {
   // Foods are nested beneath their shop and have no router of their own, so that a food is only
   // ever reachable through the shop that owns it.
   app.use("/api/v1/shops", shopRoute);
+
+  // The same base path, deliberately, so one resource keeps one URL. Two routers rather than one
+  // because browsing is open to both roles and writing is not, and role middleware attaches once
+  // per router. Browsing must stay first: this router's requireRole("ADMIN") applies to everything
+  // that enters it, so mounting it first would close the catalogue to students.
+  app.use("/api/v1/shops", shopAdminRoute);
 
   // Singular because the cart is one per user and is never addressed by an identifier: the caller's
   // token names it, so there is no collection here to paginate or to enumerate.

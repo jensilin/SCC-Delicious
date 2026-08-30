@@ -26,21 +26,18 @@ design only. The intended design in full lives in [`docs/ARCHITECTURE.md`](docs/
 | Authentication middleware | Bearer access-token verification on protected routes |
 | Role mechanism | `STUDENT` and `ADMIN`, with router-level role middleware |
 | Admin bootstrap | Server-side CLI; no endpoint can create an `ADMIN` |
+| Catalogue browsing | Read-only shop and food endpoints, foods scoped to their shop |
+| Cart | Server-side cart, one shop at a time, prices recomputed on every read |
+| Catalogue administration | `ADMIN` write endpoints for shops, foods, and stock |
 | Test database | Local PostgreSQL in Docker, isolated from Supabase |
-| Automated tests | **81 tests, 81 passing** |
+| Automated tests | **240 tests, 240 passing** |
 
 ### Not implemented yet
 
-- Shop and food browsing API
-- Cart
 - Checkout, inventory decrement, and idempotency
 - Orders and order management
-- Administration APIs for shops, foods, and stock
 - Payment simulation
 - Frontend (the `frontend/` directory currently holds only environment templates)
-
-The role middleware is written and unit-tested but is not yet attached to any router, because no
-protected resource exists for it to guard. That happens in a later phase.
 
 ---
 
@@ -161,8 +158,9 @@ Notable properties already enforced by the database rather than by application c
 - `CHECK (stock_quantity >= 0)` on `foods` and `CHECK (quantity > 0)` on `cart_items`.
 - Primary keys are UUIDs; timestamps are `TIMESTAMPTZ` in UTC.
 
-Only the `users` table is exercised by application code so far. The rest exist for phases that have
-not been built.
+The `users`, `shops`, `foods`, `carts`, and `cart_items` tables are exercised by application code.
+`orders`, `order_items`, and `payments` exist for the checkout and order-management phases and are
+not yet written to by any endpoint.
 
 **The initial migration has already been applied**, and `prisma migrate status` currently reports
 that the database schema is up to date.
@@ -273,13 +271,18 @@ Current verified result:
 
 | Metric | Value |
 | --- | --- |
-| Tests | 81 |
-| Passed | 81 |
+| Tests | 240 |
+| Passed | 240 |
 | Failed | 0 |
 
 Coverage today spans application bootstrap, the health endpoint including its database-failure
 path, password hashing, JWT signing and verification, the validation schemas, the role middleware,
-and the authentication endpoints end to end over HTTP.
+and the authentication, catalogue browsing, cart, and catalogue administration endpoints end to end
+over HTTP. The database-level guarantees are exercised directly as well as through the API: the
+uniqueness of a cart line, `CHECK (quantity > 0)`, `CHECK (stock_quantity >= 0)`, the refusal to
+delete a shop that orders reference, and the survival of an order item whose food has been deleted.
+Concurrency is tested rather than reasoned about — simultaneous cart writes, and simultaneous stock
+changes against the last units.
 
 Two things are worth understanding before running the suite:
 
@@ -332,8 +335,8 @@ restarted, start it again with `docker start scc-delicious-test-db` before runni
 
 ## API
 
-Everything below is implemented and covered by tests. Endpoints for the catalogue, cart, orders,
-and administration do not exist yet and are not documented here.
+Everything below is implemented and covered by tests. Endpoints for checkout and orders do not
+exist yet and are not documented here.
 
 ### Operational
 
@@ -351,6 +354,57 @@ and administration do not exist yet and are not documented here.
 | `POST` | `/api/v1/auth/logout` | none | `204` | Clear the refresh cookie |
 | `GET` | `/api/v1/auth/me` | access token | `200` | Return the signed-in user's own record |
 
+### Catalogue browsing
+
+Any signed-in caller, either role. Read-only.
+
+| Method | Path | Success | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/shops` | `200` | Every shop, ordered by name |
+| `GET` | `/api/v1/shops/:shopId` | `200` | One shop |
+| `GET` | `/api/v1/shops/:shopId/foods` | `200` | That shop's foods, ordered by name |
+| `GET` | `/api/v1/shops/:shopId/foods/:foodId` | `200` | One food, within that shop |
+
+Foods are addressed only beneath their shop. A food whose id is real but which belongs to a
+different shop is a `404`, not a leak.
+
+### Cart
+
+`STUDENT` only. The cart is a singleton belonging to the caller and is never addressed by an id, so
+there is no identifier a client could change to reach someone else's.
+
+| Method | Path | Success | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/cart` | `200` | The caller's cart, with current prices and totals |
+| `POST` | `/api/v1/cart/items` | `201` | Add `quantity` of `foodId`; returns the cart |
+| `PATCH` | `/api/v1/cart/items/:foodId` | `200` | Set that line's quantity; returns the cart |
+| `DELETE` | `/api/v1/cart/items/:foodId` | `204` | Remove that line |
+| `DELETE` | `/api/v1/cart` | `204` | Empty the cart and release its shop |
+
+A cart holds one shop at a time; a food from another shop is refused with `409
+CART_SHOP_MISMATCH`. Cart lines store quantity only — every price and total is recomputed from the
+food at the moment of the request. Adding to a cart does not reserve stock.
+
+### Catalogue administration
+
+`ADMIN` only. These share the `/api/v1/shops` base path with browsing but live in a second router,
+so the role check attaches once rather than per handler.
+
+| Method | Path | Success | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/shops` | `201` | Create a shop |
+| `PATCH` | `/api/v1/shops/:shopId` | `200` | Update a shop |
+| `DELETE` | `/api/v1/shops/:shopId` | `204` | Delete a shop |
+| `POST` | `/api/v1/shops/:shopId/foods` | `201` | Create a food, with its initial stock |
+| `PATCH` | `/api/v1/shops/:shopId/foods/:foodId` | `200` | Update that food's name or price |
+| `DELETE` | `/api/v1/shops/:shopId/foods/:foodId` | `204` | Delete that food |
+| `PATCH` | `/api/v1/shops/:shopId/foods/:foodId/stock` | `200` | Move that food's stock by a signed delta |
+
+Stock is set absolutely only at creation. Afterwards it moves by delta, applied as one conditional
+database update that cannot leave it negative — never a read, a comparison, and a write. Deleting a
+shop that past orders reference is refused with `409 SHOP_HAS_ORDERS`; deleting a food succeeds and
+leaves any order line intact, because those columns are snapshots.
+
 Successful responses return the resource directly, with no envelope. Errors share one structure —
 `{ "error": { "code", "message" } }` — produced only by the central error handler, with a
 `details` array of `{ field, message }` added for validation failures:
@@ -364,6 +418,9 @@ Successful responses return the resource directly, with no envelope. Errors shar
 | `FORBIDDEN` | `403` |
 | `NOT_FOUND` | `404` |
 | `EMAIL_ALREADY_REGISTERED` | `409` |
+| `CART_SHOP_MISMATCH` | `409` |
+| `SHOP_HAS_ORDERS` | `409` |
+| `INSUFFICIENT_STOCK` | `409` |
 | `INTERNAL_ERROR` | `500` |
 
 ---
@@ -427,9 +484,8 @@ oversights.
 
 - **Refresh tokens are stateless.** Logout clears the cookie but cannot invalidate a token already
   copied from it, and there is no "sign out everywhere". This is an accepted v1 limitation.
-- **No administrative resource endpoints exist**, so shops and foods cannot yet be created through
-  the API at all.
-- **Catalogue browsing is not implemented**, so the API currently exposes no product data.
+- **Nothing can be bought yet.** The cart is complete, but checkout, orders, and payment are not
+  built, so a cart has nowhere to go.
 - **The test database does not exercise the Supabase connection pooler.** Tests run against a plain
   local PostgreSQL, so pooler-specific behaviour is not covered by the suite.
 - **No frontend exists.**
@@ -446,17 +502,24 @@ The order below is the one recorded in `docs/ARCHITECTURE.md`; phases build on e
 | --- | --- | --- |
 | 1 | Configuration and database schema | **Complete** |
 | 2 | Authentication | **Complete** |
-| 3 | Authorization mechanism | **Complete**, awaiting a protected resource to guard |
-| 4 | Read-only shop and food browsing | **Next** |
-| 5 | Cart | Planned |
-| 6 | Checkout with inventory and idempotency | Planned |
-| 7 | Order management | Planned |
-| 8 | Administration | Planned |
-| 9 | Payment simulation | Planned |
-| 10 | Frontend | Planned |
+| 3 | Authorization mechanism | **Complete** |
+| 4 | Read-only shop and food browsing | **Complete** |
+| 5 | Cart | **Complete** |
+| 6 | Catalogue administration | **Complete** |
+| 7 | Checkout with inventory, payment simulation, and idempotency | **Next** |
+| 8 | Order management | Planned |
+| 9 | Frontend | Planned |
 
-The next phase is read-only catalogue browsing. **Its API contract is still being settled** — most
-notably whether browsing requires authentication — so no catalogue endpoints are documented above.
+The cart was built before catalogue administration and administration followed it, so both are
+done and the ordering is back on track. Payment simulation is not a phase of its own: it is one
+module inside the checkout transaction.
+
+The next phase is checkout. Three decisions must be settled before it starts, and are recorded as
+open in the architecture: where the idempotency key travels and what a replayed one returns; the
+fact that `orders.idempotency_key` is unique globally rather than per user, so a key reused across
+accounts must not return one user's order to another; and how a simulated payment can fail at all,
+given that `PaymentStatus` permits only `SUCCEEDED` while a mandatory test requires that a failed
+payment leaves no order and no stock movement.
 
 Each phase follows the same sequence: planned, implemented, tested, reviewed, then committed on its
 own. A phase's behaviour is not described as working until its tests pass.
@@ -504,7 +567,7 @@ npx --no-install prisma migrate status
 
 | Command | Expected result |
 | --- | --- |
-| `npm test` | 81 tests, 81 passing, 0 failing |
+| `npm test` | 240 tests, 240 passing, 0 failing |
 | `prisma validate` | The schema is valid |
 | `prisma migrate status` | Database schema is up to date |
 
