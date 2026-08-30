@@ -6,6 +6,7 @@ const { env } = require("./config/env");
 const { errorHandler } = require("./middleware/error-handler.middleware");
 const { notFound } = require("./middleware/not-found.middleware");
 const authRoute = require("./routes/auth.route");
+const cartRoute = require("./routes/cart.route");
 const healthRoute = require("./routes/health.route");
 const shopRoute = require("./routes/shop.route");
 
@@ -46,6 +47,10 @@ function createApp() {
   // Foods are nested beneath their shop and have no router of their own, so that a food is only
   // ever reachable through the shop that owns it.
   app.use("/api/v1/shops", shopRoute);
+
+  // Singular because the cart is one per user and is never addressed by an identifier: the caller's
+  // token names it, so there is no collection here to paginate or to enumerate.
+  app.use("/api/v1/cart", cartRoute);
 
   app.use(notFound);
   app.use(errorHandler);

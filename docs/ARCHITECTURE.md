@@ -5,8 +5,8 @@ web application. It is an architecture decision document. It describes what we i
 build and why. It does not describe anything that has been built.
 
 **Status: partially implemented.** The database schema and its migration, the Express
-application foundation, the health endpoint, authentication, and read-only catalogue browsing are
-built and covered by tests. Catalogue administration, cart, checkout, orders, payment, and the
+application foundation, the health endpoint, authentication, read-only catalogue browsing, and the
+cart are built and covered by tests. Catalogue administration, checkout, orders, payment, and the
 entire frontend are design only. Unless a section says otherwise, read it as the intended design
 rather than as a description of working software.
 
@@ -531,7 +531,65 @@ The accompanying rule — that every cart item's food belongs to the cart's shop
 tables and cannot be expressed as a check constraint. It is a service-layer obligation and a
 test, not a database guarantee.
 
-# Checkout and Payment
+## Settled cart parameters
+
+The rules above describe what the cart is; they did not say what its endpoints look like. These
+were settled by the project owner when the cart was implemented, and are recorded here for the
+same reason the authentication parameters are.
+
+**Only a `STUDENT` holds a cart.** [Authorization](#authorization) grants "manage their own cart"
+to that role and lists no cart among what an `ADMIN` may do, so the role check is attached once to
+the cart router and an `ADMIN` receives `403 FORBIDDEN`.
+
+**The cart is a singleton addressed by the caller's token, never by an identifier.** The family is
+therefore `/api/v1/cart`, singular, and is the second exception to the plural-noun convention in
+[API Architecture](#api-architecture). *Why it matters beyond naming:* with no cart id anywhere in
+a path there is no identifier a client could substitute to reach someone else's cart, so ownership
+is a property of every query rather than a check that could be omitted.
+
+| Endpoint | Status | Effect |
+| --- | --- | --- |
+| `GET /api/v1/cart` | `200` | The caller's cart |
+| `POST /api/v1/cart/items` | `201` | Adds `quantity` of `foodId`; returns the cart |
+| `PATCH /api/v1/cart/items/:foodId` | `200` | Sets that line's `quantity`; returns the cart |
+| `DELETE /api/v1/cart/items/:foodId` | `204` | Removes that line |
+| `DELETE /api/v1/cart` | `204` | Empties the cart and releases its shop |
+
+**A line is addressed by its food rather than by its own row id.** A food appears in a cart at
+most once — the database says so, with a unique index on `(cart_id, food_id)` — so the food
+identifier already names one line, and it is the identifier the client holds from the catalogue.
+
+**`POST` adds to a quantity; `PATCH` replaces one.** Adding a food already in the cart increases
+that line rather than creating a second, and the increase is applied by the database rather than
+computed from a value read first. *Why the two differ:* an "add to cart" button asks for more of
+something, while a quantity field asks for a specific number.
+
+**Every write returns the whole cart**, because each one moves the totals and a client given only
+the changed line would have to fetch the cart to redraw anyway.
+
+**The cart carries `id`, `shopId`, `items`, and `totalMinor`**; each item carries `foodId`, `name`,
+`priceMinor`, `quantity`, and `lineTotalMinor`. All money is integer minor units, unformatted, and
+every figure is derived from the food row at the moment of the request — nothing about a price is
+stored on a cart line.
+
+**A user who has never added anything reads an empty cart, not a `404`.** The row is created on the
+first write, and until then `GET` answers `200` with a null `id`, a null `shopId`, no items, and a
+zero total. *Why:* an empty cart is an ordinary state rather than a failure, and answering a read by
+writing a row would create one for every visitor who merely looked.
+
+**Adding a food from another shop is refused with `409 CART_SHOP_MISMATCH`**, a distinct code
+because the frontend has to recognise this case specifically in order to offer clearing the cart and
+switching shops. A missing food and a line that is not in the cart are both `404 NOT_FOUND`.
+
+**The single-shop rule is applied as one conditional update** matching a cart that is either
+unclaimed or already holds that shop, the same pattern used for inventory in
+[Inventory and Concurrency](#inventory-and-concurrency). Reading the shop
+and then writing it would let two simultaneous additions from different shops both succeed. Removing
+the last line returns the shop reference to null in the same transaction, which is what lets the
+next addition come from anywhere.
+
+**No cart operation reads or writes stock.** This follows from the cart not reserving inventory:
+more of a food may sit in a cart than the shop has, and the shortfall is reported at checkout.
 
 **Checkout revalidates price and inventory on the server.** Nothing about the money or the
 stock position is taken from the request. The server recomputes every line total and the order
@@ -614,11 +672,13 @@ Inventory movements and status changes are not recorded in audit tables in v1.
 # API Architecture
 
 The API is REST over JSON, served under the prefix **`/api/v1`**. Resources are addressed by
-plural nouns and acted on with HTTP verbs. An endpoint family that is a set of actions rather
-than a resource collection is named for the action instead; authentication is the only such
-family in v1, and it is called out as an exception in
-[Settled authentication parameters](#settled-authentication-parameters) rather than left to look
-like a slip.
+plural nouns and acted on with HTTP verbs. An endpoint family that is not a resource collection
+is named for what it addresses instead. There are exactly two such families in v1, and both are
+called out where they are specified rather than left to look like a slip: authentication, which
+is a set of actions rather than a collection, in
+[Settled authentication parameters](#settled-authentication-parameters); and the cart, which is
+one per user and is never addressed by an identifier, in
+[Settled cart parameters](#settled-cart-parameters).
 
 **Successful responses return the resource or collection directly.** There is no success
 envelope wrapping every payload.
@@ -644,6 +704,7 @@ The vocabulary in use, which the frontend may match on:
 | `FORBIDDEN` | `403` | Authenticated, but this role may not perform this class of action |
 | `NOT_FOUND` | `404` | No route matches the request |
 | `EMAIL_ALREADY_REGISTERED` | `409` | Registration for an address that already has an account |
+| `CART_SHOP_MISMATCH` | `409` | Adding a food from a shop other than the one the cart holds |
 | `INTERNAL_ERROR` | `500` | An unhandled fault; the message is always generic |
 
 A `VALIDATION_ERROR` — and only a validation error — carries `details`, an array of
@@ -945,6 +1006,12 @@ the document. Each was resolved by the project owner, not assumed during impleme
   recommended rather than normative. See [API Architecture](#api-architecture).
 - **Catalogue administration is a phase in its own right**, ordered directly after read-only
   browsing. Its absence from the implementation ordering was found during the same phase review.
+- **The cart's endpoint parameters** — a `STUDENT`-only singular `/cart` family, lines addressed by
+  their food, `POST` adding to a quantity while `PATCH` replaces it, a server-computed response
+  carrying current prices and totals, an empty cart read rather than a `404` before the row exists,
+  and `409 CART_SHOP_MISMATCH` for a food from another shop — were never recorded as open questions:
+  the architecture described what the cart is without specifying its API, which was found during the
+  cart phase. See [Settled cart parameters](#settled-cart-parameters).
 
 The permitted transitions between order statuses remain open and are listed above, under order
 management.
@@ -980,6 +1047,11 @@ administration as an endpoint family, but the phase list never mentioned it, whi
 with no supported way for a shop or food to come into existence. Placing it after browsing settles
 the read shape before anything writes to it, and it unblocks the cart phase, which needs real foods
 to add.
+
+**The cart was in the event built before catalogue administration**, which remains the one phase
+still owed from the ordering above. Nothing in the cart depends on it: the cart needs foods to
+exist, not endpoints that create them, and its tests seed the catalogue directly through Prisma as
+the browsing tests already did.
 
 Two commitments follow from this and apply to all future work on the project. Documentation and
 status reports must distinguish functionality that has been implemented from functionality that
