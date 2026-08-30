@@ -7,6 +7,7 @@ const { errorHandler } = require("./middleware/error-handler.middleware");
 const { notFound } = require("./middleware/not-found.middleware");
 const authRoute = require("./routes/auth.route");
 const healthRoute = require("./routes/health.route");
+const shopRoute = require("./routes/shop.route");
 
 // Construction only. Nothing here listens on a port, so a test can exercise the application
 // without starting a server and both paths use one definition of it.
@@ -41,6 +42,10 @@ function createApp() {
   app.use("/health", healthRoute);
 
   app.use("/api/v1/auth", authRoute);
+
+  // Foods are nested beneath their shop and have no router of their own, so that a food is only
+  // ever reachable through the shop that owns it.
+  app.use("/api/v1/shops", shopRoute);
 
   app.use(notFound);
   app.use(errorHandler);

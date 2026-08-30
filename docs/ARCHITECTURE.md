@@ -5,10 +5,10 @@ web application. It is an architecture decision document. It describes what we i
 build and why. It does not describe anything that has been built.
 
 **Status: partially implemented.** The database schema and its migration, the Express
-application foundation, the health endpoint, and authentication are built and covered by tests.
-Shops, foods, cart, checkout, orders, payment, and the entire frontend are design only. Unless a
-section says otherwise, read it as the intended design rather than as a description of working
-software.
+application foundation, the health endpoint, authentication, and read-only catalogue browsing are
+built and covered by tests. Catalogue administration, cart, checkout, orders, payment, and the
+entire frontend are design only. Unless a section says otherwise, read it as the intended design
+rather than as a description of working software.
 
 The document covers v1 only. It deliberately stops short of settling questions that have not
 been decided, and it deliberately excludes work that v1 does not need. Open questions are
@@ -455,6 +455,44 @@ This behaviour must be verified by a test that issues concurrent checkouts again
 remaining unit and asserts that exactly one succeeds. Reasoning about this code is not
 sufficient evidence that it is correct. No such test exists yet.
 
+# Catalogue Browsing
+
+Browsing is the read-only half of the catalogue: listing shops, and reading the foods within one.
+
+**Browsing requires authentication.** Both `STUDENT` and `ADMIN` may browse, so the access-token
+middleware is attached once to the catalogue router and no role check is needed. No part of the API
+is reachable anonymously.
+
+*Why:* this design describes two roles and no anonymous actor, and keeping every `/api/v1` resource
+behind one rule leaves a single question to answer about any endpoint. Opening the catalogue to the
+public later is a smaller change than closing it once clients depend on it being open.
+
+| Endpoint | Returns |
+| --- | --- |
+| `GET /api/v1/shops` | Every shop, ordered by name |
+| `GET /api/v1/shops/:shopId` | One shop |
+| `GET /api/v1/shops/:shopId/foods` | That shop's foods, ordered by name |
+| `GET /api/v1/shops/:shopId/foods/:foodId` | One food, within that shop |
+
+**Foods are addressed only beneath their shop.** There is no top-level `/foods` route, because
+without a parent in the path there would be nothing to scope the lookup by. Each food query reads
+through its shop, so a food belonging to a different shop is not found rather than returned. This is
+the scoping rule from [Authorization](#authorization) applied for the first time, and it is a test
+rather than an intention.
+
+A shop that does not exist is a `404` even when only its foods were requested. An empty array would
+assert that the shop exists and has an empty menu, which is a different claim.
+
+Collections are ordered by name so that a response is stable between requests; without an explicit
+order the database may return rows in any sequence.
+
+Prices are returned as the integer minor units they are stored in, and the server never formats
+money.
+
+**This phase is read-only.** No endpoint creates, updates, or deletes a shop or a food. Until the
+catalogue administration phase builds those endpoints, catalogue data enters the database only
+through direct access.
+
 # Cart
 
 The cart is **stored in PostgreSQL** as server-side state owned by one user, not in browser
@@ -616,8 +654,14 @@ once per handler: authentication, shop and food browsing, cart, orders, and admi
 *Why group by required privilege:* it removes the possibility of forgetting to protect an
 individual route.
 
-Collection endpoints are expected to support pagination with a default and a maximum page size.
-This is recommended rather than normative for v1.
+**Collection endpoints return plain arrays in v1, and pagination is deferred.** The earlier wording
+here — that collections were expected to support pagination with a default and a maximum page size
+— was recommended rather than normative, and it is now settled as deferred.
+
+*Why:* the catalogue is small enough that a page would be the whole collection, so the machinery
+would be written for a scale this deployment does not have. The cost is recorded rather than left
+to be discovered: introducing pagination later turns a collection response from an array into an
+object, which is a breaking change for every client already reading one.
 
 # Security
 
@@ -685,9 +729,9 @@ many deployed environments exist beyond that remains open.
 
 # Testing Strategy
 
-This section states what testing consists of. Application bootstrap, the health endpoint, and
-authentication are covered so far; anything below that is not marked as covered describes intent
-rather than existing coverage.
+This section states what testing consists of. Application bootstrap, the health endpoint,
+authentication, and read-only catalogue browsing are covered so far; anything below that is not
+marked as covered describes intent rather than existing coverage.
 
 - **Unit tests** for pure logic: total and line-item calculation, order status transition
   rules, and validation schemas. *Why here:* these are fast, deterministic, and cover the
@@ -893,6 +937,14 @@ the document. Each was resolved by the project owner, not assumed during impleme
   question: the architecture and the backend rule both described services reaching Prisma while
   the database rule globbed a `repositories/` directory, and the disagreement was found during an
   authentication audit.
+- **Catalogue browsing requires authentication**, for both roles. This was never recorded as an open
+  question: the architecture named the roles that may browse without saying whether an anonymous
+  visitor could, which was found during a phase review. See
+  [Catalogue Browsing](#catalogue-browsing).
+- **Collection endpoints return plain arrays, and pagination is deferred.** Previously described as
+  recommended rather than normative. See [API Architecture](#api-architecture).
+- **Catalogue administration is a phase in its own right**, ordered directly after read-only
+  browsing. Its absence from the implementation ordering was found during the same phase review.
 
 The permitted transitions between order statuses remain open and are listed above, under order
 management.
@@ -918,9 +970,16 @@ Each phase is carried out in the same order, and each step is finished before th
    individual change can be understood or reverted on its own.
 
 Phases build on each other, so the ordering runs from foundations outward: configuration and
-database schema, then authentication, then authorization, then read-only browsing, then cart,
-then checkout with inventory and idempotency, then order management. Later phases depend on
-earlier ones being complete and verified rather than assumed.
+database schema, then authentication, then authorization, then read-only browsing, then catalogue
+administration, then cart, then checkout with inventory and idempotency, then order management.
+Later phases depend on earlier ones being complete and verified rather than assumed.
+
+**Catalogue administration was missing from this ordering** and is inserted directly after
+read-only browsing. The omission was found during a phase review: the API section lists
+administration as an endpoint family, but the phase list never mentioned it, which left browsing
+with no supported way for a shop or food to come into existence. Placing it after browsing settles
+the read shape before anything writes to it, and it unblocks the cart phase, which needs real foods
+to add.
 
 Two commitments follow from this and apply to all future work on the project. Documentation and
 status reports must distinguish functionality that has been implemented from functionality that
