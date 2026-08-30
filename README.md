@@ -3,7 +3,8 @@
 A full-stack food-ordering application for a campus food court. Students browse shops, build a
 cart, and place orders; administrators manage shops, menus, and stock.
 
-**The backend is under active development and the frontend has not been started.** This README
+**The backend is under active development and the frontend has not been started.** Students can now
+browse, build a cart, and place an order; what remains on the backend is order management. This README
 describes the repository as it exists today — what is built and verified, and what is still
 design only. The intended design in full lives in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -29,14 +30,15 @@ design only. The intended design in full lives in [`docs/ARCHITECTURE.md`](docs/
 | Catalogue browsing | Read-only shop and food endpoints, foods scoped to their shop |
 | Cart | Server-side cart, one shop at a time, prices recomputed on every read |
 | Catalogue administration | `ADMIN` write endpoints for shops, foods, and stock |
+| Checkout | `POST /api/v1/orders`: one transaction placing an order, deducting stock, recording payment, clearing the cart |
+| Idempotency | Required `Idempotency-Key` header; a retried key returns the original order and writes nothing |
+| Payment simulation | A `SUCCEEDED` payment row written inside the checkout transaction |
 | Test database | Local PostgreSQL in Docker, isolated from Supabase |
-| Automated tests | **240 tests, 240 passing** |
+| Automated tests | **305 tests, 305 passing** |
 
 ### Not implemented yet
 
-- Checkout, inventory decrement, and idempotency
-- Orders and order management
-- Payment simulation
+- Order management: reading an order, listing a student's orders, cancelling, and advancing status
 - Frontend (the `frontend/` directory currently holds only environment templates)
 
 ---
@@ -158,9 +160,9 @@ Notable properties already enforced by the database rather than by application c
 - `CHECK (stock_quantity >= 0)` on `foods` and `CHECK (quantity > 0)` on `cart_items`.
 - Primary keys are UUIDs; timestamps are `TIMESTAMPTZ` in UTC.
 
-The `users`, `shops`, `foods`, `carts`, and `cart_items` tables are exercised by application code.
-`orders`, `order_items`, and `payments` exist for the checkout and order-management phases and are
-not yet written to by any endpoint.
+All 8 tables are now written by application code. `orders`, `order_items`, and `payments` are
+written by checkout and, after it commits, are never modified: order management will move an order's
+status and nothing else.
 
 **The initial migration has already been applied**, and `prisma migrate status` currently reports
 that the database schema is up to date.
@@ -271,18 +273,25 @@ Current verified result:
 
 | Metric | Value |
 | --- | --- |
-| Tests | 240 |
-| Passed | 240 |
+| Tests | 305 |
+| Passed | 305 |
 | Failed | 0 |
 
 Coverage today spans application bootstrap, the health endpoint including its database-failure
 path, password hashing, JWT signing and verification, the validation schemas, the role middleware,
-and the authentication, catalogue browsing, cart, and catalogue administration endpoints end to end
-over HTTP. The database-level guarantees are exercised directly as well as through the API: the
-uniqueness of a cart line, `CHECK (quantity > 0)`, `CHECK (stock_quantity >= 0)`, the refusal to
-delete a shop that orders reference, and the survival of an order item whose food has been deleted.
-Concurrency is tested rather than reasoned about — simultaneous cart writes, and simultaneous stock
-changes against the last units.
+and the authentication, catalogue browsing, cart, catalogue administration, and checkout endpoints
+end to end over HTTP. The database-level guarantees are exercised directly as well as through the
+API: the uniqueness of a cart line, `CHECK (quantity > 0)`, `CHECK (stock_quantity >= 0)`, the
+global uniqueness of an idempotency key, one payment per order, the refusal to delete a shop that
+orders reference, and the survival of an order item whose food has been deleted.
+
+Concurrency is tested rather than reasoned about, and checkout is where most of that lives:
+simultaneous cart writes; simultaneous stock changes against the last units; two simultaneous
+checkouts carrying one idempotency key, which must produce exactly one order; ten buyers placing
+orders at once against five units of stock, which must produce five orders and five refusals with
+no overselling; eight buyers checking out four shared foods at once, which must not deadlock; and a
+checkout racing each kind of cart write. A forced failure part-way through a checkout is asserted to
+leave no order, no payment, no stock movement, and the cart exactly as it was.
 
 Two things are worth understanding before running the suite:
 
@@ -335,8 +344,9 @@ restarted, start it again with `docker start scc-delicious-test-db` before runni
 
 ## API
 
-Everything below is implemented and covered by tests. Endpoints for checkout and orders do not
-exist yet and are not documented here.
+Everything below is implemented and covered by tests. The order-management endpoints — reading an
+order, listing a student's orders, cancelling, and advancing status — do not exist yet and are not
+documented here.
 
 ### Operational
 
@@ -405,9 +415,80 @@ database update that cannot leave it negative — never a read, a comparison, an
 shop that past orders reference is refused with `409 SHOP_HAS_ORDERS`; deleting a food succeeds and
 leaves any order line intact, because those columns are snapshots.
 
+### Checkout
+
+`STUDENT` only; an `ADMIN` receives `403`. The request carries **no body and no cart id** — the
+caller's own cart, its shop, the quantities, and the prices are all server state — and one required
+header.
+
+| Method | Path | Success | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/api/v1/orders` | `201` | Place an order from the caller's cart |
+| `POST` | `/api/v1/orders` | `200` | Return the order an earlier request with the same key created |
+
+```http
+POST /api/v1/orders
+Authorization: Bearer <access token>
+Idempotency-Key: 7f3c9a1e-0b2d-4c85-9d61-2f8ab4c07e5a
+```
+
+The `Idempotency-Key` header is required, must match `^[A-Za-z0-9_-]+$`, must be 16 to 128
+characters, and is case-sensitive. The server treats it as opaque: it is never trimmed, normalised,
+or parsed, only compared. A client generates one key per checkout attempt from a cryptographically
+random source and reuses that same key for every retry of that attempt.
+
+- A **new key** places the order and answers `201`.
+- The **same key again** answers `200` with the identical order and writes nothing at all: no second
+  order, no stock movement, no change to a cart that has since been refilled.
+- **Two requests with one key at the same time** produce exactly one order — one `201` and one `200`,
+  with the same body.
+- A key that **already belongs to another user's order** is `409 IDEMPOTENCY_KEY_CONFLICT`, and the
+  response discloses nothing about that order.
+- A **failed checkout leaves the key free**, because its transaction rolled back and the row never
+  existed. Retrying after `409 INSUFFICIENT_STOCK` is an ordinary fresh attempt.
+
+Checkout is one database transaction. The order, its items, the payment, every stock deduction, and
+the emptied cart all commit together or none of them exist — a mid-checkout failure leaves no order,
+no payment, no stock movement, and the cart untouched. Stock is deducted through the same conditional
+update the admin stock endpoint uses, so simultaneous checkouts cannot oversell; deductions are
+applied in a fixed food order so that concurrent checkouts sharing foods cannot deadlock. The cart
+is cleared last, and only if everything before it succeeded.
+
+Prices and totals are read from the food rows at the moment of checkout and computed on the server;
+nothing about money is taken from the request. Each order item stores the food's name and unit price
+as immutable snapshots, so renaming, repricing, or deleting a food afterwards never rewrites a past
+order. The payment amount is assigned from the order total rather than recalculated, so the line
+totals, the order total, and the payment amount cannot disagree. Every order is created `PLACED`,
+and payment in v1 is simulated: the row is always `SUCCEEDED`, written inside the transaction, with
+no external gateway.
+
+The response is the order and its lines, with no `userId`, no idempotency key, no payment, and no
+timestamps beyond `placedAt`:
+
+```json
+{
+  "id": "…",
+  "shopId": "…",
+  "status": "PLACED",
+  "totalMinor": 1450,
+  "placedAt": "2026-08-30T12:00:00.000Z",
+  "items": [
+    { "foodId": "…", "name": "Chicken Roll", "priceMinor": 450, "quantity": 2, "lineTotalMinor": 900 }
+  ]
+}
+```
+
+An empty or absent cart is `409 CART_EMPTY`. A food that cannot supply the ordered quantity is `409
+INSUFFICIENT_STOCK`, whose `details` name the failing line as `{ foodId, name, message }` and carry
+no stock figure. A cart changed while the order was being built is `409 CART_MODIFIED`, which
+guarantees no cart line can disappear without having been ordered.
+
 Successful responses return the resource directly, with no envelope. Errors share one structure —
-`{ "error": { "code", "message" } }` — produced only by the central error handler, with a
-`details` array of `{ field, message }` added for validation failures:
+`{ "error": { "code", "message" } }` — produced only by the central error handler, with a `details`
+array added where a client can act on more than the code. Validation failures name the offending
+field as `{ field, message }`; `INSUFFICIENT_STOCK` names the food instead, as
+`{ foodId, name, message }`, because what has to be highlighted is a line of the cart rather than
+something the client sent.
 
 | Code | Status |
 | --- | --- |
@@ -419,6 +500,9 @@ Successful responses return the resource directly, with no envelope. Errors shar
 | `NOT_FOUND` | `404` |
 | `EMAIL_ALREADY_REGISTERED` | `409` |
 | `CART_SHOP_MISMATCH` | `409` |
+| `CART_EMPTY` | `409` |
+| `CART_MODIFIED` | `409` |
+| `IDEMPOTENCY_KEY_CONFLICT` | `409` |
 | `SHOP_HAS_ORDERS` | `409` |
 | `INSUFFICIENT_STOCK` | `409` |
 | `INTERNAL_ERROR` | `500` |
@@ -484,8 +568,12 @@ oversights.
 
 - **Refresh tokens are stateless.** Logout clears the cookie but cannot invalidate a token already
   copied from it, and there is no "sign out everywhere". This is an accepted v1 limitation.
-- **Nothing can be bought yet.** The cart is complete, but checkout, orders, and payment are not
-  built, so a cart has nowhere to go.
+- **An order cannot be looked at once it is placed.** Checkout returns the order it created, but
+  there is no endpoint yet to read it again, list a student's orders, cancel one, or advance its
+  status. That is the next phase.
+- **Payment is simulated.** The payment row is always `SUCCEEDED` and no provider is contacted.
+  Introducing a real gateway would mean revisiting checkout's single-transaction shape, because a
+  network call cannot live inside a database transaction.
 - **The test database does not exercise the Supabase connection pooler.** Tests run against a plain
   local PostgreSQL, so pooler-specific behaviour is not covered by the suite.
 - **No frontend exists.**
@@ -506,20 +594,21 @@ The order below is the one recorded in `docs/ARCHITECTURE.md`; phases build on e
 | 4 | Read-only shop and food browsing | **Complete** |
 | 5 | Cart | **Complete** |
 | 6 | Catalogue administration | **Complete** |
-| 7 | Checkout with inventory, payment simulation, and idempotency | **Next** |
-| 8 | Order management | Planned |
+| 7 | Checkout with inventory, payment simulation, and idempotency | **Complete** |
+| 8 | Order management | **Next** |
 | 9 | Frontend | Planned |
 
 The cart was built before catalogue administration and administration followed it, so both are
-done and the ordering is back on track. Payment simulation is not a phase of its own: it is one
+done and the ordering is back on track. Payment simulation was not a phase of its own: it is one
 module inside the checkout transaction.
 
-The next phase is checkout. Three decisions must be settled before it starts, and are recorded as
-open in the architecture: where the idempotency key travels and what a replayed one returns; the
-fact that `orders.idempotency_key` is unique globally rather than per user, so a key reused across
-accounts must not return one user's order to another; and how a simulated payment can fail at all,
-given that `PaymentStatus` permits only `SUCCEEDED` while a mandatory test requires that a failed
-payment leaves no order and no stock movement.
+The next phase is order management: reading one of the caller's own orders, listing them, `ADMIN`
+listing and status transitions, and cancellation. Its shape is already constrained by what exists —
+an order is immutable apart from its status, a status change is a conditional update matching the
+expected current status, and a student's order is read by a query scoped to both the order id and
+the caller, which is the pattern checkout's idempotency lookup established. Whether cancelling
+restores stock, and which transitions each role may make, are recorded as open decisions in the
+architecture and are settled before that code is written.
 
 Each phase follows the same sequence: planned, implemented, tested, reviewed, then committed on its
 own. A phase's behaviour is not described as working until its tests pass.
@@ -567,7 +656,7 @@ npx --no-install prisma migrate status
 
 | Command | Expected result |
 | --- | --- |
-| `npm test` | 240 tests, 240 passing, 0 failing |
+| `npm test` | 305 tests, 305 passing, 0 failing |
 | `prisma validate` | The schema is valid |
 | `prisma migrate status` | Database schema is up to date |
 

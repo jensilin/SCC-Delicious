@@ -92,8 +92,16 @@ async function findOrCreateCart(tx, userId) {
   return existing ?? tx.cart.create({ data: { userId }, select: { id: true } });
 }
 
+// `client` takes either the shared Prisma client or a transaction client, so checkout can read the
+// cart inside its own transaction without a second definition of what a cart holds. The scoping by
+// userId stays here rather than at the call site, which is what keeps ownership a property of the
+// query for every caller rather than a check each one has to remember.
+function findCartForUser(client, userId) {
+  return client.cart.findUnique({ where: { userId }, select: cartSelect });
+}
+
 async function getCart(userId) {
-  return toCartView(await prisma.cart.findUnique({ where: { userId }, select: cartSelect }));
+  return toCartView(await findCartForUser(prisma, userId));
 }
 
 async function addItem(userId, { foodId, quantity }) {
@@ -211,4 +219,11 @@ async function clearCart(userId) {
   });
 }
 
-module.exports = { addItem, clearCart, getCart, removeItem, updateItemQuantity };
+module.exports = {
+  addItem,
+  clearCart,
+  findCartForUser,
+  getCart,
+  removeItem,
+  updateItemQuantity,
+};

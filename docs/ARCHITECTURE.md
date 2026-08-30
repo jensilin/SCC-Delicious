@@ -6,9 +6,10 @@ build and why. It does not describe anything that has been built.
 
 **Status: partially implemented.** The database schema and its migration, the Express
 application foundation, the health endpoint, authentication, read-only catalogue browsing, catalogue
-administration, and the cart are built and covered by tests. Checkout, orders, payment, and the
-entire frontend are design only. Unless a section says otherwise, read it as the intended design
-rather than as a description of working software.
+administration, the cart, and checkout with its simulated payment are built and covered by tests.
+Order management — listing, reading, cancelling, and advancing an order — and the entire frontend
+are design only. Unless a section says otherwise, read it as the intended design rather than as a
+description of working software.
 
 The document covers v1 only. It deliberately stops short of settling questions that have not
 been decided, and it deliberately excludes work that v1 does not need. Open questions are
@@ -453,7 +454,9 @@ writers could otherwise conflict: restoring stock on cancellation, and advancing
 
 This behaviour must be verified by a test that issues concurrent checkouts against the last
 remaining unit and asserts that exactly one succeeds. Reasoning about this code is not
-sufficient evidence that it is correct. No such test exists yet.
+sufficient evidence that it is correct. That test exists: ten simultaneous buyers against five
+units produce five orders and five refusals, and eight buyers sharing four foods produce no
+deadlock.
 
 # Catalogue Browsing
 
@@ -680,8 +683,11 @@ more of a food may sit in a cart than the shop has, and the shortfall is reporte
 
 # Checkout and Payment
 
-**Status: design only.** The design below is settled and complete, but no checkout endpoint
-exists yet. Nothing in this section describes working software.
+**Status: implemented.** `POST /api/v1/orders` places orders exactly as described below, with the
+simulated payment, and is covered by tests including the concurrency scenarios this section
+requires. Two mechanisms differ from the numbered sequence that was settled before the code
+existed, both recorded under [Implementation notes](#implementation-notes) with the reason. Reading
+an order, listing orders, cancelling, and advancing status are a later phase and do not exist yet.
 
 **Checkout revalidates price and inventory on the server.** Nothing about the money or the
 stock position is taken from the request. The server recomputes every line total and the order
@@ -813,11 +819,13 @@ isolation level or from coordination in JavaScript.
 
 1. Look the key up, scoped to the caller. Found means replay: return that order, having written
    nothing.
-2. Load the caller's cart. No row means `409 CART_EMPTY`.
-3. Take the cart row lock by writing its shop reference back unchanged — the same lock, taken the
-   same way, that [Cart](#cart) already uses to stop an addition interleaving with a removal.
+2. Take the cart row lock, before anything is read from the cart. No cart row to lock means
+   `409 CART_EMPTY`.
+3. The lock is the one [Cart](#cart) already relies on to stop an addition interleaving with a
+   removal, and it is acquired the same way: by writing the cart row.
 4. Read the cart lines under that lock. They are the source of truth for this attempt.
-5. No lines means `409 CART_EMPTY`.
+5. No lines means `409 CART_EMPTY` — with one exception, resolved after the rollback rather than
+   here, described under [Implementation notes](#implementation-notes).
 6. Read each food's current name and price.
 7. Compute each line total and the order total from those live prices.
 8. Create the order — `PLACED`, the caller's id, the cart's shop, the key, the total — with its
@@ -911,7 +919,8 @@ first instance.
 
 ### Concurrency this design must survive
 
-Reasoning is not evidence here; each of these is a test the phase owes.
+Reasoning is not evidence here, so each row below is an integration test that exists and runs
+against a real PostgreSQL instance rather than an argument in this document.
 
 | Scenario | Required outcome |
 | --- | --- |
@@ -923,6 +932,49 @@ Reasoning is not evidence here; each of these is a test the phase owes.
 | Checkout against a food deletion | The order item survives with a null food reference and its snapshot intact |
 | Checkout against a cart write | Adding, removing, and clearing block on the cart row lock; a quantity change is caught by the conditional delete |
 | Two foods, the second short of stock | Nothing at all: no order, no items, no payment, both stock levels unchanged, cart untouched |
+
+### Implementation notes
+
+Checkout is `order.validator.js` for the header, `order.service.js` for the transaction,
+`payment.service.js` for the simulated payment, `order.controller.js`, and `order.route.js` mounted
+at `/api/v1/orders`. It reuses the conditional decrement from the shop service and a cart loader the
+cart service now exposes, taking the shared Prisma client or a transaction client, so that checkout
+reads a cart inside its transaction without a second definition of what a cart holds.
+
+Every settled parameter above holds as written. Two **mechanisms** differ from the sequence settled
+before the code existed, because implementing them literally proved incorrect; both are recorded
+here rather than changed silently.
+
+**The cart row lock is taken by touching the row, not by writing its shop reference back.** Writing
+back a value read a moment earlier is a lost update: between the read and the write, an addition can
+claim a shop for an empty cart, and the write would then erase that claim. `Cart` survives this only
+because its own next statement fails and rolls the write back. Checkout instead locks the row before
+reading anything from it, which is strictly stronger — every line it goes on to read was already
+under the lock — and the touch cannot erase a value because it carries none. A checkout that does
+not place an order rolls the touch back with everything else.
+
+**An empty cart can mean the caller's own concurrent request already succeeded, so it is re-asked
+after the rollback.** The settled description of two concurrent requests for one key has the loser
+blocked on the unique index; in practice it blocks earlier, on the cart row lock, and by the time
+that lock is granted the winner has committed and taken the cart's lines with it. Read literally,
+step 5 would answer a duplicate submission with `409 CART_EMPTY`. So both `CART_EMPTY` and a
+duplicate key are treated the same way: the transaction is already gone, and the scoped lookup is
+repeated outside it. An order of the caller's carrying that key means replay `200`; nothing found
+means the answer stands — `409 IDEMPOTENCY_KEY_CONFLICT` for a key that is someone else's, and
+`409 CART_EMPTY` for a cart that really was empty. No guarantee changes: exactly one order exists,
+the loser wrote nothing that survived, and its `200` carries the same body as the winner's `201`.
+
+*A consequence worth knowing:* this makes the cart row lock, not the unique index, the mechanism
+that usually serialises one user's concurrent checkouts. The unique index remains the arbiter, and
+is what the cross-user conflict test exercises directly.
+
+Two smaller notes. Prisma 7 reports a unique violation through its driver adapter, naming the
+violated index rather than listing columns as `meta.target` did before it, so the code recognises
+`orders_idempotency_key_key` and the cross-user test is what would catch that shape changing under
+an upgrade. And the interactive transaction is given longer than Prisma's default two seconds to be
+admitted and five to finish: ten simultaneous checkouts for one food queue on that row, each holding
+its connection while it waits, and the defaults would turn ordinary contention into a failure that
+reads like a checkout bug.
 
 # Order Management
 
@@ -1107,19 +1159,26 @@ Scenarios treated as mandatory rather than optional:
 
 1. Registration always produces `STUDENT` and cannot assign `ADMIN`. **Covered.**
 2. A caller cannot read or modify another user's cart or orders. *Partly covered:* the cart half
-   is tested — another user's cart cannot be read, changed, cleared, or removed from. Orders do
-   not exist yet.
+   is tested — another user's cart cannot be read, changed, cleared, or removed from — and checkout
+   is tested to order from the caller's own cart, to record the caller as the buyer, and to disclose
+   nothing about another user's order when their idempotency key is reused. There is no endpoint yet
+   that reads an order back, so that half arrives with order management.
 3. Administrative endpoints reject a `STUDENT` caller, and reject mismatched parent-child
    resource pairs. **Covered** by the catalogue administration phase, over HTTP, for every write
    endpoint.
-4. Checkout ignores a client-supplied price and uses the server-side price.
-5. Concurrent checkouts for the last unit of stock result in exactly one success.
-6. A repeated checkout with the same idempotency key produces one order, not two.
+4. Checkout ignores a client-supplied price and uses the server-side price. **Covered**, including
+   a request body attempting to name its own price, total, status, and buyer.
+5. Concurrent checkouts for the last unit of stock result in exactly one success. **Covered**, as
+   ten simultaneous buyers against five units: five orders, five refusals, final stock zero.
+6. A repeated checkout with the same idempotency key produces one order, not two. **Covered**, both
+   sequentially and with two simultaneous requests.
 7. A forced failure mid-checkout leaves no order, no order items, no payment row, no stock
-   movement, and the cart unchanged. *Stated as a forced failure rather than as a failed payment,
-   which is unreachable by construction and is how the data invariants reference already phrases
-   it.*
-8. An order's line totals sum to its order total and to its payment amount.
+   movement, and the cart unchanged. **Covered** by a two-line order whose second line is short of
+   stock, asserted after the first line has already been deducted inside the transaction. *Stated as
+   a forced failure rather than as a failed payment, which is unreachable by construction and is how
+   the data invariants reference already phrases it.*
+8. An order's line totals sum to its order total and to its payment amount. **Covered**, read back
+   from the database rather than from the response.
 
 **Tooling.** Tests run on Node's built-in runner, `node:test`, and integration tests drive HTTP
 with the built-in `fetch` against an application bound to an ephemeral port. Neither requires a
@@ -1374,8 +1433,9 @@ to add.
 **The cart was in the event built before catalogue administration**, and administration followed
 it rather than being dropped. Nothing in the cart depended on it: the cart needs foods to exist,
 not endpoints that create them, and its tests seed the catalogue directly through Prisma as the
-browsing tests already did. Both phases are now complete, so the ordering above is once again the
-order still to be followed — checkout next, then order management.
+browsing tests already did. Both phases are complete, and checkout has since been built on top of
+them, so the ordering above has been followed since. Order management is the only backend phase
+left.
 
 Two commitments follow from this and apply to all future work on the project. Documentation and
 status reports must distinguish functionality that has been implemented from functionality that

@@ -8,6 +8,7 @@ const { notFound } = require("./middleware/not-found.middleware");
 const authRoute = require("./routes/auth.route");
 const cartRoute = require("./routes/cart.route");
 const healthRoute = require("./routes/health.route");
+const orderRoute = require("./routes/order.route");
 const shopAdminRoute = require("./routes/shop-admin.route");
 const shopRoute = require("./routes/shop.route");
 
@@ -58,6 +59,12 @@ function createApp() {
   // Singular because the cart is one per user and is never addressed by an identifier: the caller's
   // token names it, so there is no collection here to paginate or to enumerate.
   app.use("/api/v1/cart", cartRoute);
+
+  // The student half of /api/v1/orders: checkout, and later the reads of a caller's own orders. It is
+  // mounted first for the same reason browsing precedes catalogue administration — the admin order
+  // router a later phase adds will carry a router-level ADMIN check, and mounting that ahead of this
+  // one would close checkout to the students it exists for.
+  app.use("/api/v1/orders", orderRoute);
 
   app.use(notFound);
   app.use(errorHandler);

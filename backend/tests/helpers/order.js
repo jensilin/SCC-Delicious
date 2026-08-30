@@ -2,9 +2,15 @@ const crypto = require("node:crypto");
 
 const { prisma } = require("../../src/config/prisma");
 
-// Checkout is a later phase, so no endpoint can create an order. Tests that need one — deleting a
-// shop past orders reference, and confirming an order item survives its food — create it through
-// Prisma, the same way shops and foods are created.
+// A key of the shape the validator accepts. A UUID is 36 characters of exactly the permitted
+// alphabet, and randomUUID is the cryptographically random source the contract asks a client for.
+function idempotencyKey() {
+  return crypto.randomUUID();
+}
+
+// Used where an order has to exist without checkout having created it — the catalogue tests that
+// prove a shop with orders cannot be deleted, and that an order item outlives its food. Checkout's
+// own tests place orders over HTTP instead, because how the order comes to exist is what they check.
 async function createOrder({ userId, shopId, food, quantity = 1 }) {
   const unitPriceMinorSnapshot = food?.priceMinor ?? 1000;
   const lineTotalMinor = unitPriceMinorSnapshot * quantity;
@@ -42,4 +48,4 @@ async function resetOrders() {
   await prisma.order.deleteMany();
 }
 
-module.exports = { createOrder, resetOrders };
+module.exports = { createOrder, idempotencyKey, resetOrders };

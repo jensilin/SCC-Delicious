@@ -9,7 +9,8 @@ function toDetails(error) {
   }));
 }
 
-// Accepts any of body, params, and query, and validates the ones given.
+// Accepts any request property carrying input — body, params, query, headers — and validates the ones
+// given. Header names arrive lowercased from Node, so a header schema declares them in that form.
 //
 // Express 5 exposes request.query through a getter with no setter, so parsed values are collected
 // on request.validated instead of overwriting the originals. Handlers read request.validated.body
