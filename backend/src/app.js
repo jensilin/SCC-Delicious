@@ -1,18 +1,19 @@
+const cookieParser = require("cookie-parser");
 const cors = require("cors");
 const express = require("express");
 
 const { env } = require("./config/env");
 const { errorHandler } = require("./middleware/error-handler.middleware");
 const { notFound } = require("./middleware/not-found.middleware");
+const authRoute = require("./routes/auth.route");
 const healthRoute = require("./routes/health.route");
 
 // Construction only. Nothing here listens on a port, so a test can exercise the application
 // without starting a server and both paths use one definition of it.
 //
 // The middleware order is fixed deliberately and is part of the architecture: cross-origin
-// handling, body parsing, routes, the not-found handler, and the error handler last. Cookie
-// parsing belongs between CORS and body parsing and is added by the authentication phase, which
-// introduces the only cookie the design has.
+// handling, cookie parsing, body parsing, routes, the not-found handler, and the error handler
+// last.
 function createApp() {
   const app = express();
 
@@ -26,6 +27,11 @@ function createApp() {
   // wildcard origin is not permitted with credentials.
   app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
 
+  // The refresh cookie is the only cookie in the design, and the refresh endpoint is the only
+  // reader of it. Unsigned: the value is a JWT whose own signature is verified before it is
+  // trusted, so a second signature over the cookie would add a key to manage and prove nothing new.
+  app.use(cookieParser());
+
   // A size limit is part of the documented posture. The value is not specified anywhere, and
   // 100kb is far more than any endpoint in this design needs.
   app.use(express.json({ limit: "100kb" }));
@@ -33,6 +39,8 @@ function createApp() {
   // Outside /api/v1 on purpose. The prefix versions the resource API, and an operational probe is
   // not a resource that could ever need a second version.
   app.use("/health", healthRoute);
+
+  app.use("/api/v1/auth", authRoute);
 
   app.use(notFound);
   app.use(errorHandler);

@@ -3,23 +3,19 @@ require("../setup");
 const assert = require("node:assert/strict");
 const { after, before, test } = require("node:test");
 
-const { createApp } = require("../../src/app");
 const { prisma } = require("../../src/config/prisma");
 const { checkDatabaseConnection } = require("../../src/services/health.service");
+const { startTestServer, stopTestServer } = require("../helpers/server");
 
 let server;
 let baseUrl;
 
-// Port 0 lets the operating system pick a free port, so the suite cannot collide with a
-// development server already running on 3000.
 before(async () => {
-  server = createApp().listen(0);
-  await new Promise((resolve) => server.once("listening", resolve));
-  baseUrl = `http://127.0.0.1:${server.address().port}`;
+  ({ server, baseUrl } = await startTestServer());
 });
 
 after(async () => {
-  await new Promise((resolve) => server.close(resolve));
+  await stopTestServer(server);
   await prisma.$disconnect();
 });
 

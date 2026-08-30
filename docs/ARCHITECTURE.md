@@ -4,10 +4,11 @@ This document records the approved technical architecture for SCC Delicious, a f
 web application. It is an architecture decision document. It describes what we intend to
 build and why. It does not describe anything that has been built.
 
-**Status: no application code exists yet.** At the time of writing, the repository contains
-only this document and the Cursor rules directory. Nothing in this document has been
-implemented, and nothing has been tested. Every design statement here should be read as
-"the intended design", not as a description of working software.
+**Status: partially implemented.** The database schema and its migration, the Express
+application foundation, the health endpoint, and authentication are built and covered by tests.
+Shops, foods, cart, checkout, orders, payment, and the entire frontend are design only. Unless a
+section says otherwise, read it as the intended design rather than as a description of working
+software.
 
 The document covers v1 only. It deliberately stops short of settling questions that have not
 been decided, and it deliberately excludes work that v1 does not need. Open questions are
@@ -192,10 +193,10 @@ Authentication is implemented in the Express API. Supabase authentication is not
 **Registration creates a `STUDENT` account.** The role is set by the server, not by the
 request.
 
-**`ADMIN` accounts are not created by public self-registration.** They are created through a
-controlled mechanism that is not reachable from the public registration endpoint. The specific
-mechanism is a remaining decision (see Future Decisions); what is settled is that no publicly
-reachable endpoint can produce an `ADMIN`.
+**`ADMIN` accounts are not created by public self-registration.** They are created by a
+server-side command-line script, run by an operator who already holds the environment and its
+secrets. No publicly reachable endpoint can produce an `ADMIN`, and no request field of any kind
+influences a role.
 
 **Where the role is read from.** The role is carried as a signed claim in the access token and
 trusted from there, rather than re-read from the database on every request.
@@ -219,6 +220,65 @@ person cannot hold two accounts differing only in capitalisation.
 Refresh tokens are not persisted server-side in v1, which means signing out clears the cookie
 but cannot invalidate a token already stolen from it. This is an accepted v1 limitation, listed
 under scope boundaries rather than left unnoticed.
+
+## Settled authentication parameters
+
+The choices below were settled by the project owner before implementation. They are recorded
+here because each is a decision the code cannot explain on its own.
+
+**Tokens** are JWTs signed with `HS256` by the `jose` library, the access and refresh tokens each
+using their own secret. An access token carries exactly four claims: `sub`, holding the user's
+UUID, plus `role`, `iat`, and `exp`. Issuer and audience claims are deliberately absent: there is
+one issuer and one audience, and a claim whose value never varies verifies nothing.
+
+**Endpoints and their success codes:**
+
+| Endpoint | Success |
+| --- | --- |
+| `POST /api/v1/auth/register` | `201` |
+| `POST /api/v1/auth/login` | `200` |
+| `POST /api/v1/auth/refresh` | `200` |
+| `POST /api/v1/auth/logout` | `204` |
+| `GET /api/v1/auth/me` | `200` |
+
+`me` returns the signed-in user's own record. It exists because the client has an access token but
+no user record after exchanging a refresh cookie on page load, and it is the route the
+access-token middleware is exercised on.
+
+Authentication is an action-oriented family rather than a resource collection, so `/auth/...` is
+an explicit exception to the plural-noun convention in [API Architecture](#api-architecture)
+rather than an oversight.
+
+**Token delivery.** Register, login, and refresh return the access token in the JSON response
+body. The refresh token is delivered only as a cookie and never appears in a response body.
+
+**The refresh cookie** is named `refresh_token`, is `httpOnly`, and carries
+`Path=/api/v1/auth`, `SameSite=Strict`, and a `Max-Age` derived from `REFRESH_TOKEN_TTL`. It is
+`Secure` in production and not in local HTTP development, because a `Secure` cookie is not sent
+over plain `http://` and the flag would make the endpoint untestable locally.
+
+*Why `Strict` is available:* the client and API are deployed same-site, which was the open
+question blocking this value. The `Path` scopes the cookie to the only endpoints that consume
+it, so it is not attached to ordinary API requests at all.
+
+**Registration issues a session.** A successful registration returns an access token and sets
+the refresh cookie, so a new account is signed in rather than sent to a login form.
+
+**Passwords must be at least 8 characters**, with no composition rules. *Why no complexity
+requirements:* length is the property that resists guessing, while character-class rules push
+people towards predictable substitutions and a password manager satisfies them trivially anyway.
+
+**The bcrypt cost factor has a floor of 12**, enforced when configuration is validated.
+
+**A duplicate registration responds `409` with the code `EMAIL_ALREADY_REGISTERED`.** This is a
+deliberate and bounded exception to the generic-failure rule above, and the reasoning is worth
+stating because it looks like a contradiction. Registration cannot both create a session and
+conceal that an email is taken: a response indistinguishable from success would have to hand an
+access token to a caller who proved nothing about the existing account, which is a far worse
+outcome than confirming the address is registered. The concealment requirement therefore applies
+to sign-in, where it costs nothing, and not to registration, where it costs either correctness or
+a usable error. Enumeration through this endpoint is accepted, and rate limiting — which is what
+would actually bound it — is listed under scope boundaries.
 
 # Authorization
 
@@ -516,7 +576,11 @@ Inventory movements and status changes are not recorded in audit tables in v1.
 # API Architecture
 
 The API is REST over JSON, served under the prefix **`/api/v1`**. Resources are addressed by
-plural nouns and acted on with HTTP verbs.
+plural nouns and acted on with HTTP verbs. An endpoint family that is a set of actions rather
+than a resource collection is named for the action instead; authentication is the only such
+family in v1, and it is called out as an exception in
+[Settled authentication parameters](#settled-authentication-parameters) rather than left to look
+like a slip.
 
 **Successful responses return the resource or collection directly.** There is no success
 envelope wrapping every payload.
@@ -530,6 +594,22 @@ detail. The centralised error handler is the only place that produces it.
 
 *Why a stable code:* the frontend must distinguish "out of stock" from a validation failure in
 order to react usefully, and matching on prose is fragile.
+
+The vocabulary in use, which the frontend may match on:
+
+| Code | Status | Meaning |
+| --- | --- | --- |
+| `VALIDATION_ERROR` | `400` | The request failed schema validation |
+| `UNAUTHENTICATED` | `401` | The access token is absent, malformed, expired, or forged |
+| `INVALID_CREDENTIALS` | `401` | Sign-in failed, deliberately without saying why |
+| `INVALID_REFRESH_TOKEN` | `401` | The refresh cookie is absent, invalid, or names a deleted account |
+| `FORBIDDEN` | `403` | Authenticated, but this role may not perform this class of action |
+| `NOT_FOUND` | `404` | No route matches the request |
+| `EMAIL_ALREADY_REGISTERED` | `409` | Registration for an address that already has an account |
+| `INTERNAL_ERROR` | `500` | An unhandled fault; the message is always generic |
+
+A `VALIDATION_ERROR` — and only a validation error — carries `details`, an array of
+`{ field, message }` naming every field that failed. A `500` never carries detail of any kind.
 
 **Endpoint families** are grouped so that role middleware attaches once per router rather than
 once per handler: authentication, shop and food browsing, cart, orders, and administration.
@@ -549,7 +629,7 @@ The security posture rests on the boundaries described above rather than on any 
 - **The frontend never receives database credentials or JWT secrets.** Nothing in the browser
   bundle can reach the database directly.
 - **Passwords** are hashed with bcrypt, never logged, and never returned by any endpoint. A
-  minimum password length is enforced by the registration schema.
+  minimum length of 8 characters is enforced by the registration schema.
 - **The client cannot assign its own role**, and client-supplied prices, totals, and stock
   figures are never trusted. All are re-derived server-side.
 - **Refresh tokens** are `httpOnly` and therefore unreadable by JavaScript; access tokens are
@@ -565,12 +645,12 @@ The security posture rests on the boundaries described above rather than on any 
 that a header-carried bearer token does not have. The posture is therefore deliberately narrow:
 the refresh endpoint is the **only** cookie-authenticated endpoint, and every other protected
 endpoint authenticates from the `Authorization` header, which a cross-site form post cannot
-set. The refresh cookie's `SameSite` value is the mitigation for the remaining surface, and it
-cannot be chosen until the deployment topology is settled — a same-origin deployment permits
-the strictest value, while a cross-origin one does not. This is a remaining decision.
+set. The remaining surface is closed by `SameSite=Strict`, which a same-site deployment of the
+client and API permits, and narrowed further by scoping the cookie's `Path` to `/api/v1/auth`, so
+it is never attached to any other request.
 
-**The bcrypt cost factor** is configured from the environment with a validated minimum, so a
-misconfigured low value fails at startup rather than silently weakening every password hash.
+**The bcrypt cost factor** is configured from the environment with a validated minimum of 12, so
+a misconfigured low value fails at startup rather than silently weakening every password hash.
 
 Rate limiting, additional security headers, and audit logging are not part of v1. See scope
 boundaries.
@@ -605,8 +685,9 @@ many deployed environments exist beyond that remains open.
 
 # Testing Strategy
 
-This section states what testing consists of. Only application bootstrap and the health endpoint
-are covered so far; every scenario listed below describes intent rather than existing coverage.
+This section states what testing consists of. Application bootstrap, the health endpoint, and
+authentication are covered so far; anything below that is not marked as covered describes intent
+rather than existing coverage.
 
 - **Unit tests** for pure logic: total and line-item calculation, order status transition
   rules, and validation schemas. *Why here:* these are fast, deterministic, and cover the
@@ -620,10 +701,12 @@ are covered so far; every scenario listed below describes intent rather than exi
 
 Scenarios treated as mandatory rather than optional:
 
-1. Registration always produces `STUDENT` and cannot assign `ADMIN`.
+1. Registration always produces `STUDENT` and cannot assign `ADMIN`. **Covered.**
 2. A caller cannot read or modify another user's cart or orders.
 3. Administrative endpoints reject a `STUDENT` caller, and reject mismatched parent-child
-   resource pairs.
+   resource pairs. *Partly covered:* the role middleware is unit-tested, but v1 has no
+   administrative endpoint yet, so nothing exercises it over HTTP. That arrives with the first
+   admin phase.
 4. Checkout ignores a client-supplied price and uses the server-side price.
 5. Concurrent checkouts for the last unit of stock result in exactly one success.
 6. A repeated checkout with the same idempotency key produces one order, not two.
@@ -640,6 +723,19 @@ production, so the suite may reset data destructively. `backend/tests/setup.js` 
 application is loaded — so a misconfigured variable cannot quietly point the suite at Supabase.
 The container runs the same committed migration as every other environment, which means the test
 database exercises the real constraints rather than an approximation of them.
+
+**Resetting between tests.** `tests/helpers/database.js` truncates every application table, reading
+the table list from the database so a table added by a later migration is included without anyone
+remembering. It repeats the loopback check before truncating and confirms the connected database is
+the one `TEST_DATABASE_URL` names, because this is the function that actually destroys data rather
+than the one that merely configures it. The suite runs with `--test-concurrency=1`: files reset a
+shared database, so two of them running at once would truncate each other's rows mid-test.
+
+**Shared test helpers** live in `backend/tests/helpers/` and cover starting and stopping a server on
+an ephemeral port, resetting the database, creating a user of a chosen role, and signing in to
+obtain an access token and refresh cookie. Users are created through Prisma rather than the API, so
+that a test of sign-in does not depend on registration working — and because `ADMIN` has no
+endpoint that could create one.
 
 Project documentation must continue to distinguish what is implemented from what is actually
 covered by passing tests, and must not imply coverage that does not exist.
@@ -665,9 +761,11 @@ scc-delicious/
       controllers/        HTTP handling
       services/           business logic, transactions, authorization
       middleware/         auth, validation, error handling
+      validators/         Zod request schemas
       lib/                shared server utilities
     prisma/               schema and committed migrations
-    tests/                unit and integration tests
+    scripts/              operator commands, such as creating an ADMIN
+    tests/                unit and integration tests, with shared helpers
     .env.example          documented variable names, placeholder values
   docs/                   this document and future design notes
   .cursor/rules/          Cursor rules
@@ -744,12 +842,6 @@ restructuring what is described above.
 The following are genuinely undecided. They are recorded so that they are settled explicitly
 rather than by accident during implementation. Items that block a specific phase are marked.
 
-**Blocks authentication**
-
-- The controlled mechanism by which `ADMIN` accounts are created.
-- Whether the client and API share an origin in production, which fixes the refresh cookie's
-  `SameSite` value.
-
 **Blocks order management**
 
 - The permitted status transitions, and who may perform each.
@@ -787,6 +879,20 @@ the document. Each was resolved by the project owner, not assumed during impleme
   Supertest. This was never recorded as an open question: the architecture required
   full-middleware-stack integration tests without saying what issued the requests, which was found
   during a testing audit.
+- **`ADMIN` accounts are created by a server-side CLI script**, never by any endpoint. Previously
+  listed as blocking authentication. See [Authentication](#authentication).
+- **The client and API are deployed same-site**, fixing the refresh cookie's `SameSite` value at
+  `Strict`. Previously listed as blocking authentication. See [Security](#security).
+- **The remaining authentication parameters** — `jose` with `HS256`, native `bcrypt`, an
+  8-character minimum password, a cost floor of 12, the four `/auth` routes with their status
+  codes, and the `409 EMAIL_ALREADY_REGISTERED` duplicate response — were never recorded as open
+  questions: the architecture required authentication without specifying them, which was found
+  during an authentication audit. See
+  [Settled authentication parameters](#settled-authentication-parameters).
+- **Services call Prisma directly**, with no repository layer. This was never recorded as an open
+  question: the architecture and the backend rule both described services reaching Prisma while
+  the database rule globbed a `repositories/` directory, and the disagreement was found during an
+  authentication audit.
 
 The permitted transitions between order statuses remain open and are listed above, under order
 management.

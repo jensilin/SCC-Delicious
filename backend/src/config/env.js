@@ -14,19 +14,37 @@ loadEnv({
 // DIRECT_URL is deliberately not part of this schema. It is the session connection Prisma's CLI
 // uses for migrations, and application queries belong on the pooled DATABASE_URL; validating it
 // here would invite runtime code to reach for it.
-//
-// The token, token-lifetime, and bcrypt variables are also absent for now. They are still
-// placeholders in .env, and requiring them before authentication exists would stop the server
-// from starting for a feature that has not been built. The authentication phase adds them here.
-const environmentSchema = z.object({
-  DATABASE_URL: z
-    .string()
-    .min(1)
-    .regex(/^postgres(ql)?:\/\//, "must be a postgres:// connection string"),
-  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  PORT: z.coerce.number().int().positive().default(3000),
-  CORS_ORIGIN: z.string().min(1),
-});
+
+// The lifetimes jose accepts and the cookie's Max-Age is derived from: a whole number of seconds,
+// minutes, hours, or days.
+const timeSpan = /^\d+[smhd]$/;
+
+const environmentSchema = z
+  .object({
+    DATABASE_URL: z
+      .string()
+      .min(1)
+      .regex(/^postgres(ql)?:\/\//, "must be a postgres:// connection string"),
+    NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+    PORT: z.coerce.number().int().positive().default(3000),
+    CORS_ORIGIN: z.string().min(1),
+
+    // A shorter secret than the 256-bit key HS256 derives would weaken every token silently, so
+    // the length is a startup condition rather than a convention.
+    JWT_ACCESS_SECRET: z.string().min(32, "must be at least 32 characters"),
+    JWT_REFRESH_SECRET: z.string().min(32, "must be at least 32 characters"),
+
+    ACCESS_TOKEN_TTL: z.string().regex(timeSpan, 'must be a time span such as "15m"'),
+    REFRESH_TOKEN_TTL: z.string().regex(timeSpan, 'must be a time span such as "7d"'),
+
+    // The floor is architectural, not arbitrary: a cost low enough to be fast is low enough to
+    // brute-force, and 31 is bcrypt's own ceiling.
+    BCRYPT_COST: z.coerce.number().int().min(12, "must be at least 12").max(31),
+  })
+  .refine((value) => value.JWT_ACCESS_SECRET !== value.JWT_REFRESH_SECRET, {
+    message: "must differ from JWT_ACCESS_SECRET, or a refresh token could be presented as an access token",
+    path: ["JWT_REFRESH_SECRET"],
+  });
 
 const result = environmentSchema.safeParse(process.env);
 

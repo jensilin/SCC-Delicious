@@ -3,7 +3,6 @@ description: PostgreSQL and Prisma database rules for SCC Delicious
 globs:
   - "backend/prisma/**"
   - "backend/src/services/**/*.js"
-  - "backend/src/repositories/**/*.js"
 alwaysApply: false
 ---
 

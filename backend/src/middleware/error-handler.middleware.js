@@ -15,7 +15,7 @@ function errorHandler(error, request, response, next) {
     console.error("Unhandled error", error);
   }
 
-  response.status(statusCode).json({
+  const body = {
     error: {
       code: error.code ?? (isClientError ? "BAD_REQUEST" : "INTERNAL_ERROR"),
       // A 5xx message is replaced rather than forwarded: it can carry a connection string, a file
@@ -24,7 +24,15 @@ function errorHandler(error, request, response, next) {
         ? error.clientMessage ?? error.message
         : "Internal server error",
     },
-  });
+  };
+
+  // Per-field detail exists for validation failures, where "which field" is the whole point. It is
+  // attached only to client errors, so a 5xx cannot smuggle internals out through a second field.
+  if (isClientError && Array.isArray(error.details)) {
+    body.error.details = error.details;
+  }
+
+  response.status(statusCode).json(body);
 }
 
 module.exports = { errorHandler };

@@ -7,8 +7,9 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "prisma:generate": "prisma generate",
-    "test": "node --test \"tests/**/*.test.js\"",
-    "test:watch": "node --test --watch \"tests/**/*.test.js\""
+    "create-admin": "node scripts/create-admin.js",
+    "test": "node --test --test-concurrency=1 \"tests/**/*.test.js\"",
+    "test:watch": "node --test --watch --test-concurrency=1 \"tests/**/*.test.js\""
   },
   "keywords": [],
   "author": "",
@@ -20,9 +21,12 @@
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
+    "bcrypt": "^6.0.0",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "jose": "^6.2.10",
     "zod": "^4.5.2"
   }
 }
