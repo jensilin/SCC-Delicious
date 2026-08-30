@@ -286,9 +286,15 @@ would actually bound it — is listed under scope boundaries.
 There are exactly **two application roles: `STUDENT` and `ADMIN`.** No other role exists. There
 is no separate customer or shop-owner role; a shop is administered by `ADMIN` users.
 
-- **`STUDENT`** may browse shops and foods, manage their own cart, place orders, and read
-  their own orders.
-- **`ADMIN`** may manage shops and foods, including stock, and may read and advance orders.
+- **`STUDENT`** may browse shops and foods, manage their own cart, place orders, read their own
+  orders, and cancel one of their own orders while it is still `PLACED`.
+- **`ADMIN`** may manage shops and foods, including stock, and may read any order, advance an
+  order one status at a time, and cancel an order at any point before it is completed.
+
+Cancellation appears in both lists because both roles hold a form of it, bounded differently: a
+student may cancel only their own order and only before the shop has started work, while an
+administrator may cancel any order up to the moment it is completed. The bounds, and who may make
+each individual move, are the [status transition table](#the-status-transition-table).
 
 Authorization has two layers, and both are required.
 
@@ -738,17 +744,22 @@ like. These were settled by the project owner during the checkout design review,
 implementation existed, and are recorded here for the same reason the cart parameters are.
 
 **Checkout is `STUDENT`-only.** [Authorization](#authorization) grants "place orders" to that role
-and grants `ADMIN` only the reading and advancing of orders, so `authenticate` and
-`requireRole("STUDENT")` attach once at router level and an `ADMIN` receives `403 FORBIDDEN`.
+alone; what it grants an `ADMIN` over an order — reading it, advancing it, cancelling it — never
+includes creating one, so `authenticate` and `requireRole("STUDENT")` attach once at router level and
+an `ADMIN` receives `403 FORBIDDEN`.
 
-**The student router is mounted first at `/api/v1/orders`**, so that the admin order router the
-next phase adds can share the base path behind its own `requireRole("ADMIN")`. This is the same
-split, and the same load-bearing mounting order, as
-[Catalogue Administration](#catalogue-administration): a role check mounted first applies to
-everything entering the router, so an admin router mounted ahead of this one would close checkout
-to students. The same consequence follows too — an unmatched path beneath `/api/v1/orders` will
-reach the admin router's role check, so a `STUDENT` sees `403` where they would otherwise see
-`404`.
+**`/api/v1/orders` is a `STUDENT`-only router.** The role check attaches once to the router, so a
+route added to it later cannot be left unguarded, and an `ADMIN` reaching any path beneath it
+receives `403 FORBIDDEN`.
+
+*This was originally recorded as the first of two routers sharing the base path,* with the admin
+order router of the next phase mounted after it behind its own `requireRole("ADMIN")` — the split
+used by [Catalogue Administration](#catalogue-administration). That plan was found to be
+unimplementable during the order management design review, for a mechanical reason rather than a
+matter of taste, and the administrative endpoints were moved to their own base path instead. See
+[Where the order endpoints live](#where-the-order-endpoints-live). Nothing about checkout changed as
+a result: this router, its `STUDENT` gate, and the `403` an `ADMIN` receives are exactly as they
+were.
 
 | Endpoint | Status | Effect |
 | --- | --- | --- |
@@ -978,6 +989,10 @@ reads like a checkout bug.
 
 # Order Management
 
+**Status: design only.** The design below is settled and complete, and the decisions this section
+previously recorded as open are resolved. No order-management endpoint exists yet; nothing here
+describes working software.
+
 An order is an immutable record of a completed transaction. Its line items never change after
 creation. The only thing that moves is its status.
 
@@ -1006,11 +1021,200 @@ There is deliberately no pre-payment status. Payment is simulated inside the che
 transaction and a failure rolls that transaction back, so an order exists only once its payment
 has succeeded; the list begins after payment rather than before it.
 
-The permitted transitions between these values, who may perform each, and the statuses from
-which a cancellation may still restore stock are a remaining decision, and they block this part
-of the work.
-
 Inventory movements and status changes are not recorded in audit tables in v1.
+
+## Settled order management parameters
+
+The rules above describe what order management must guarantee; they did not say which transitions
+exist, who may make them, or what the endpoints look like. These were settled by the project owner
+during the order management design review, before any implementation existed, and are recorded here
+for the same reason the checkout parameters are.
+
+### Where the order endpoints live
+
+**The `ADMIN` endpoints use their own base path, `/api/v1/admin/orders`.** The `STUDENT` endpoints
+stay on `/api/v1/orders`, unchanged.
+
+*Why not one base path, as was originally planned:* role middleware attached with `router.use`
+applies to every method and every path beneath the mount point, so the `STUDENT` gate on
+`/api/v1/orders` rejects an `ADMIN` with `403` before a second router mounted at that same base path
+is ever reached. The fall-through the checkout section describes runs in one direction only — a
+`STUDENT` passes their own gate, matches no route, and meets the admin gate afterwards — and there is
+no direction in which an `ADMIN` gets past a `STUDENT` gate. [Catalogue
+Administration](#catalogue-administration) escapes this only because its browsing router gates no
+role at all, so both roles pass through it. Orders cannot copy that: both roles need `GET /` and
+`GET /:orderId`, with different scoping and different fields.
+
+*Alternatives considered and rejected:* attaching the `STUDENT` check per route instead of per
+router, which contradicts the settled rule that a role check attaches once per router and reinstates
+the by-omission risk that rule exists to prevent; having the student router fall through with
+`next("router")` on a role mismatch, which would silently turn an `ADMIN`'s `403` on checkout into
+something else and break a settled decision; and one role-free router branching on role inside the
+service, which moves authorization out of middleware.
+
+| Method | Path | Role | Success | Effect |
+| --- | --- | --- | --- | --- |
+| `GET` | `/api/v1/orders` | `STUDENT` | `200` | The caller's own orders, newest first, with items |
+| `GET` | `/api/v1/orders/:orderId` | `STUDENT` | `200` | One of the caller's own orders |
+| `POST` | `/api/v1/orders/:orderId/cancel` | `STUDENT` | `200` | Cancels the caller's own `PLACED` order and restores its stock |
+| `GET` | `/api/v1/admin/orders` | `ADMIN` | `200` | Every order, newest first, with items and the buyer's email |
+| `GET` | `/api/v1/admin/orders/:orderId` | `ADMIN` | `200` | Any order |
+| `PATCH` | `/api/v1/admin/orders/:orderId` | `ADMIN` | `200` | Applies one status transition from `{ status }` |
+
+Both routers attach `authenticate` and their one `requireRole` at router level, as every other
+router does.
+
+**Every student lookup is scoped to the caller**, as a `findFirst` on the order id *and* the
+caller's id. A lookup by order id alone is prohibited, exactly as it is for checkout's idempotency
+key. An order that is not the caller's is `404 NOT_FOUND` rather than `403`: the scoped query cannot
+find it, and answering "forbidden" would confirm that it exists. This is the ownership pattern
+[Checkout and Payment](#checkout-and-payment) established, applied to the id in the path.
+
+### The status transition table
+
+| From | To | Who may | Restores stock |
+| --- | --- | --- | --- |
+| `PLACED` | `PREPARING` | `ADMIN` | — |
+| `PREPARING` | `READY` | `ADMIN` | — |
+| `READY` | `COMPLETED` | `ADMIN` | — |
+| `PLACED` | `CANCELLED` | `STUDENT`, own order only; or `ADMIN` | Yes |
+| `PREPARING` | `CANCELLED` | `ADMIN` | Yes |
+| `READY` | `CANCELLED` | `ADMIN` | Yes |
+
+Every move not in that table is refused. `COMPLETED` and `CANCELLED` are terminal: nothing leaves
+either.
+
+**Advancement is one step at a time, and status skipping is not permitted.** `PLACED` to `READY` and
+`PLACED` to `COMPLETED` are refused even for an `ADMIN`. *Why:* an order that reports a status it
+never passed through makes its own history untrue, and a single permitted predecessor is what lets
+the conditional update match one status rather than a set.
+
+**A `STUDENT` may cancel only their own order and only from `PLACED`.** *Why that boundary:*
+`PLACED` is the one status in which the shop has not started work, so a student cancellation never
+discards effort already spent, and the stock it returns was never really consumed.
+
+**Every permitted cancellation restores stock, and no permitted cancellation omits it.** Because
+`COMPLETED` cannot be cancelled, stock that was genuinely consumed is never returned. This closes
+the question recorded above as open — the statuses from which a cancellation may still restore stock
+— by making the two sets identical: there is no cancel-without-restock case to design.
+
+### Cancellation
+
+**Cancellation is full-order only. Partial cancellation is not supported.** *Why:* order items are
+immutable, and carry neither a state column nor an `updated_at` — deliberately, so that a past order
+cannot be rewritten. Cancelling individual lines would need both, and therefore a migration, and it
+would contradict the record being immutable. A student who wants part of an order cancels it and
+places another.
+
+**A student cancels with `POST /api/v1/orders/:orderId/cancel` and no body.** *Why a dedicated
+endpoint rather than a status field:* a student has exactly one move available, so a `{ status }`
+body would accept four values it must then refuse, and the request would describe a choice the
+caller does not have.
+
+**An administrator changes status with `PATCH /api/v1/admin/orders/:orderId` and a `{ status }`
+body.** `CANCELLED` is one of the values that body accepts: an administrative cancellation is a
+transition like any other, and the table above is what decides whether the move is legal from the
+order's current status.
+
+**Cancellation is one transaction, and the status change is its first write.** The conditional status
+update comes before any inventory movement so that two simultaneous cancellations cannot both
+restock: the second matches zero rows and the transaction ends before a single food row is touched.
+Restoration then uses the shared conditional update from [Inventory and
+Concurrency](#inventory-and-concurrency) with a **positive** delta, applied in ascending `foodId`
+order — the same helper checkout consumes stock with, and the same lock ordering, so inventory has
+one implementation and one deadlock rule rather than two.
+
+**A line whose food reference is null is skipped, and the cancellation still succeeds.** The food has
+been deleted, so there is no inventory left to correct. *Why not refuse:* the order would be trapped
+in a status it could never leave, and deleting a food would become able to break a cancellation
+months later. The line itself is untouched — its name, price, and quantity remain the record of what
+was bought.
+
+*A property of the shared helper worth knowing here:* with a positive delta the condition
+`stockQuantity >= -delta` is true of any non-negative quantity, so zero affected rows on a
+restoration means the food row is gone rather than that the restoration was refused. The two cases
+that must be distinguished when consuming stock collapse into one when returning it.
+
+**Cancellation leaves the payment row untouched.** `PaymentStatus` permits only `SUCCEEDED` and no
+refund state exists, so a cancelled order still has a payment recorded against it. This is stated as
+a known limitation rather than left to be discovered: representing a refund means a new enum value
+and a migration, and it is listed under [Scope boundaries for v1](#scope-boundaries-for-v1).
+
+### Concurrency rules
+
+1. **The server derives the permitted predecessor status from the transition table.** The client
+   never supplies the expected current status; the endpoint and the caller's role determine which
+   move is being attempted, and the table determines what the order must currently be for that move
+   to be legal.
+2. **The transition is a single conditional update** matching the order id, the derived predecessor
+   status, and — for a student — the caller's id. The current status is never read into JavaScript,
+   compared there, and written back; that is the same race as the inventory read-compare-write, and
+   it would let a cancellation be applied twice and restock twice.
+3. **Zero affected rows is `409 ORDER_STATUS_CONFLICT`.** One code covers both an illegal move and a
+   move another actor had already applied. *Why not two codes:* the client's next action is the same
+   either way — re-read the order and show its real status — and the two are not reliably
+   distinguishable anyway, because between the attempt and any explanatory read the order can move
+   again.
+4. **Stock restorations are applied in ascending `foodId` order**, so a cancellation and a checkout
+   touching the same foods cannot acquire those row locks in opposite sequences and deadlock.
+5. **A status change needs no idempotency key**, which follows from rule 3: a repeated request finds
+   the predecessor gone and answers `409` rather than applying a second transition. Checkout needs a
+   key because a repeat would otherwise create a second order; a transition cannot repeat, because
+   the state it required no longer exists.
+
+### Responses
+
+**A successful cancellation or advancement answers `200` with the updated order, in the same shape
+that role's read returns.** *Why not `204`:* the caller's next need is the new status, and returning
+it avoids a follow-up request that could observe a further change.
+
+The `STUDENT` shape is exactly the one checkout returns — `id`, `shopId`, `status`, `totalMinor`,
+`placedAt`, and `items` of `{ foodId, name, priceMinor, quantity, lineTotalMinor }` — so one client
+component renders a just-placed order, a listed order, and a cancelled one.
+
+**The `ADMIN` shape is that same shape plus the buyer's email.** *Why:* handing an order over
+requires knowing whose it is, and an administrator reconciling a shop's queue cannot work from an
+opaque user id. Two consequences are accepted deliberately: this is the only place in v1 where one
+user's email is exposed to another — `/auth/me` returns only the caller's own — and the
+administrative selection joins to `users`, where checkout's selection joins to nothing at all.
+
+**Order lists return each order with its full `items` array, ordered newest first by `placedAt`.**
+*Why full items:* one renderer then serves both a list and a single read, and an order is small.
+*Why an explicit order:* without one PostgreSQL may return rows in any sequence, which makes both the
+interface and its tests unpredictable — the same reason the catalogue orders by name. Pagination
+remains deferred, so both lists are plain arrays.
+
+### Schema
+
+**Order management requires no migration.** It changes no table, column, index, enum, or constraint.
+All five statuses already exist in the `order_status` enum; `status` is already the only mutable
+column on an order; the `user_id` and `shop_id` indexes already cover both access paths; and the
+`Restrict` relations, the `SetNull` on an order item's food, the snapshot columns, and the shared
+conditional stock update are all unchanged and must stay that way.
+
+Four additions were considered and **declined**, each of which would be a migration:
+
+- A `cancelled_at` or status-changed-at timestamp. Status changes are not audited in v1, and
+  `updated_at` already records when the row last moved.
+- A cancellation reason. Nothing in v1 reads one.
+- A `REFUNDED` payment status. Payment is simulated and nothing can act on a refund.
+- An index on `orders.status`. No access path is defined that filters by status; if one is added,
+  the index is added with it.
+
+### Concurrency this design must survive
+
+Reasoning is not evidence, so each row below is a test the phase owes, run against a real
+PostgreSQL instance.
+
+| Scenario | Required outcome |
+| --- | --- |
+| Two simultaneous cancellations of one order | One `200`, one `409 ORDER_STATUS_CONFLICT`; stock restored exactly once |
+| A student cancellation racing an administrator's advance to `PREPARING` | Exactly one succeeds; the order's status and the food's stock agree with whichever did |
+| A cancellation racing a checkout for the same food | Both apply through the one conditional update; stock is the exact sum and never negative |
+| Cancelling an order whose food was deleted | The cancellation succeeds, that line restores nothing, and the order item keeps its snapshot |
+| A student reading or cancelling another student's order | `404`, and no row is read into memory at all |
+| Every move absent from the transition table | `409`, with no status change and no stock movement |
+| A cancelled order's shop, deleted by an administrator | Still refused with `409 SHOP_HAS_ORDERS`; a cancelled order references its shop exactly as any other does |
 
 # API Architecture
 
@@ -1022,6 +1226,14 @@ is a set of actions rather than a collection, in
 [Settled authentication parameters](#settled-authentication-parameters); and the cart, which is
 one per user and is never addressed by an identifier, in
 [Settled cart parameters](#settled-cart-parameters).
+
+**One path segment in v1 names a privilege rather than a resource: `admin`, in
+`/api/v1/admin/orders`.** The collection beneath it is still a plural noun acted on with HTTP verbs;
+the prefix exists because a single base path cannot carry two routers whose role checks differ, for
+the reason given in [Where the order endpoints live](#where-the-order-endpoints-live). It is called
+out here for the same reason the two families above are: so that it reads as a decision rather than
+as a slip. Catalogue administration needs no such prefix, because it shares `/api/v1/shops` with a
+browsing router that gates no role at all.
 
 **Successful responses return the resource or collection directly.** There is no success
 envelope wrapping every payload.
@@ -1053,6 +1265,7 @@ The vocabulary in use, which the frontend may match on:
 | `SHOP_HAS_ORDERS` | `409` | Deleting a shop that past orders still reference |
 | `INSUFFICIENT_STOCK` | `409` | A stock delta that would leave the quantity negative |
 | `IDEMPOTENCY_KEY_CONFLICT` | `409` | A checkout key that already belongs to another user's order |
+| `ORDER_STATUS_CONFLICT` | `409` | A status transition this caller may not make from the order's current status, or one another actor has already applied |
 | `INTERNAL_ERROR` | `500` | An unhandled fault; the message is always generic |
 
 A `VALIDATION_ERROR` carries `details`, an array of `{ field, message }` naming every field that
@@ -1299,6 +1512,8 @@ restructuring what is described above.
 - **Stricter transaction isolation and serialization retry loops.** Unnecessary given the
   conditional-decrement approach.
 - **Audit tables** for inventory movements and order status changes.
+- **Any representation of a refund.** `PaymentStatus` permits only `SUCCEEDED`, so a cancelled order
+  keeps the payment recorded against it. Representing a refund is a new enum value and a migration.
 - **Server-side refresh token persistence**, and therefore true "sign out everywhere". Signing
   out clears the cookie only.
 - **Rate limiting, additional security headers, and audit logging.**
@@ -1311,8 +1526,18 @@ rather than by accident during implementation. Items that block a specific phase
 
 **Blocks order management**
 
-- The permitted status transitions, and who may perform each.
-- Whether an order can be cancelled partially or only in full.
+Both items previously listed here — the permitted status transitions with who may perform each, and
+whether an order can be cancelled partially or only in full — are resolved and recorded under
+[Settled order management parameters](#settled-order-management-parameters). Two smaller questions
+took their place, surfaced by the same review, and each changes the API surface enough that
+implementing around it would be deciding it by omission:
+
+- Whether an `ADMIN` may filter the order list by status or by shop. Nothing in the codebase
+  validates a query string yet, so this would introduce that pattern, and `orders` carries no index
+  on `status`.
+- Whether an order response carries its shop's **name** as well as its `shopId`. Checkout exposes the
+  identifier alone, and unlike a food's name a shop's name is not snapshotted anywhere, so a list
+  otherwise renders an opaque identifier unless the client resolves it separately.
 
 **Not blocking**
 
@@ -1351,6 +1576,23 @@ the document. Each was resolved by the project owner, not assumed during impleme
   invariants reference already phrased its verification as a forced failure, so the resolution was
   to align this document with it rather than to build a failure switch that exists only to be
   flipped by a test. See [Testing Strategy](#testing-strategy).
+- **The order management parameters** — an `ADMIN` base path of its own at `/api/v1/admin/orders`,
+  the six-row status transition table with one permitted predecessor per move, `STUDENT` cancellation
+  of their own order from `PLACED` alone, `ADMIN` cancellation from `PLACED`, `PREPARING`, and
+  `READY`, full-order cancellation only, `POST /api/v1/orders/:orderId/cancel` against
+  `PATCH /api/v1/admin/orders/:orderId`, a server-derived predecessor in one conditional update,
+  `409 ORDER_STATUS_CONFLICT` for every refused or lost transition, `200` with the updated order,
+  lists carrying full items newest-first, the buyer's email on the administrative shape, and a null
+  food reference skipped when restoring stock — were resolved by the project owner during the order
+  management design review, before any implementation existed. The first two were previously listed
+  as blocking order management. See
+  [Settled order management parameters](#settled-order-management-parameters).
+- **The `ADMIN` order endpoints do not share `/api/v1/orders`.** The checkout phase recorded that
+  they would, behind their own role check, and the order management review found that a router-level
+  role gate makes a second router at the same base path unreachable for the other role. This was
+  never an open question — it was a plan that could not be built — and it is recorded here because
+  the checkout section had stated it as settled. See
+  [Where the order endpoints live](#where-the-order-endpoints-live).
 - **Tests run on `node:test`.** Previously listed as blocking the tests. See
   [Testing Strategy](#testing-strategy).
 - **The test database is a local PostgreSQL container**, reached through `TEST_DATABASE_URL` and
