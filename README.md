@@ -3,10 +3,11 @@
 A full-stack food-ordering application for a campus food court. Students browse shops, build a
 cart, and place orders; administrators manage shops, menus, and stock.
 
-**The backend is under active development and the frontend has not been started.** Students can now
-browse, build a cart, and place an order; what remains on the backend is order management. This README
-describes the repository as it exists today — what is built and verified, and what is still
-design only. The intended design in full lives in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+**The backend is complete for v1 and the frontend has not been started.** Students can browse, build
+a cart, place an order, read their orders, and cancel one before it is prepared; administrators
+manage the catalogue and move orders through their statuses. This README describes the repository as
+it exists today — what is built and verified, and what is still design only. The intended design in
+full lives in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
@@ -33,12 +34,15 @@ design only. The intended design in full lives in [`docs/ARCHITECTURE.md`](docs/
 | Checkout | `POST /api/v1/orders`: one transaction placing an order, deducting stock, recording payment, clearing the cart |
 | Idempotency | Required `Idempotency-Key` header; a retried key returns the original order and writes nothing |
 | Payment simulation | A `SUCCEEDED` payment row written inside the checkout transaction |
+| Order reads | A student lists and reads their own orders, newest first, scoped so another student's order is a `404` |
+| Cancellation | `POST /api/v1/orders/:orderId/cancel`: full-order only, from `PLACED`, restoring stock in the same transaction |
+| Order administration | `ADMIN` lists and reads every order with the buyer's email, and advances status one step at a time |
+| Status transitions | Applied as conditional updates against a fixed transition table; a refused or lost move is `409 ORDER_STATUS_CONFLICT` |
 | Test database | Local PostgreSQL in Docker, isolated from Supabase |
-| Automated tests | **305 tests, 305 passing** |
+| Automated tests | **378 tests, 378 passing** |
 
 ### Not implemented yet
 
-- Order management: reading an order, listing a student's orders, cancelling, and advancing status
 - Frontend (the `frontend/` directory currently holds only environment templates)
 
 ---
@@ -273,25 +277,40 @@ Current verified result:
 
 | Metric | Value |
 | --- | --- |
-| Tests | 305 |
-| Passed | 305 |
+| Tests | 378 |
+| Passed | 378 |
 | Failed | 0 |
 
 Coverage today spans application bootstrap, the health endpoint including its database-failure
 path, password hashing, JWT signing and verification, the validation schemas, the role middleware,
-and the authentication, catalogue browsing, cart, catalogue administration, and checkout endpoints
-end to end over HTTP. The database-level guarantees are exercised directly as well as through the
-API: the uniqueness of a cart line, `CHECK (quantity > 0)`, `CHECK (stock_quantity >= 0)`, the
-global uniqueness of an idempotency key, one payment per order, the refusal to delete a shop that
-orders reference, and the survival of an order item whose food has been deleted.
+and the authentication, catalogue browsing, cart, catalogue administration, checkout, and order
+management endpoints end to end over HTTP. The database-level guarantees are exercised directly as
+well as through the API: the uniqueness of a cart line, `CHECK (quantity > 0)`,
+`CHECK (stock_quantity >= 0)`, the global uniqueness of an idempotency key, one payment per order,
+the refusal to delete a shop that orders reference — including a shop whose only order was
+cancelled — and the survival of an order item whose food has been deleted.
 
-Concurrency is tested rather than reasoned about, and checkout is where most of that lives:
-simultaneous cart writes; simultaneous stock changes against the last units; two simultaneous
-checkouts carrying one idempotency key, which must produce exactly one order; ten buyers placing
-orders at once against five units of stock, which must produce five orders and five refusals with
-no overselling; eight buyers checking out four shared foods at once, which must not deadlock; and a
-checkout racing each kind of cart write. A forced failure part-way through a checkout is asserted to
-leave no order, no payment, no stock movement, and the cart exactly as it was.
+Order management is covered by walking all twenty-five status from-and-to pairs against a transition
+table written out in the test independently of the service: the six legal moves must answer `200`,
+the other nineteen `409` with the order unmoved. Ownership is asserted from the outside — another
+student's order is absent from the caller's list, and reading or cancelling it by id is a `404`
+rather than a `403` — and the response shapes are asserted key by key, so a student's order cannot
+begin carrying the buyer's email by accident.
+
+Concurrency is tested rather than reasoned about. Checkout contributes simultaneous cart writes;
+simultaneous stock changes against the last units; two simultaneous checkouts carrying one
+idempotency key, which must produce exactly one order; ten buyers placing orders at once against
+five units of stock, which must produce five orders and five refusals with no overselling; eight
+buyers checking out four shared foods at once, which must not deadlock; and a checkout racing each
+kind of cart write. Cancellation adds simultaneous double and six-way cancellations of one order,
+which must restore its stock exactly once; a student cancellation racing an administrator's advance,
+repeated, where the surviving status and the stock must agree; a cancellation racing a checkout for
+the same food; and four cancellations over three shared foods, which must not deadlock.
+
+Both transactions are proved to roll back completely. A forced failure part-way through a checkout
+leaves no order, no payment, no stock movement, and the cart exactly as it was. A cancellation whose
+second stock restore is refused by the database — the food is left one unit short of overflowing its
+`integer` column — leaves neither the status change nor the restore that had already been applied.
 
 Two things are worth understanding before running the suite:
 
@@ -344,9 +363,7 @@ restarted, start it again with `docker start scc-delicious-test-db` before runni
 
 ## API
 
-Everything below is implemented and covered by tests. The order-management endpoints — reading an
-order, listing a student's orders, cancelling, and advancing status — do not exist yet and are not
-documented here.
+Everything below is implemented and covered by tests.
 
 ### Operational
 
@@ -483,6 +500,88 @@ INSUFFICIENT_STOCK`, whose `details` name the failing line as `{ foodId, name, m
 no stock figure. A cart changed while the order was being built is `409 CART_MODIFIED`, which
 guarantees no cart line can disappear without having been ordered.
 
+### Order reads and cancellation
+
+`STUDENT` only; an `ADMIN` receives `403` on all three and works through the administrative routes
+below.
+
+| Method | Path | Success | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/orders` | `200` | The caller's own orders, newest first by `placedAt`, each with its full items |
+| `GET` | `/api/v1/orders/:orderId` | `200` | One of the caller's own orders |
+| `POST` | `/api/v1/orders/:orderId/cancel` | `200` | Cancel the caller's own `PLACED` order and restore its stock |
+
+Every lookup is scoped to the order id **and** the caller's id, so another student's order is not in
+the list and is `404 NOT_FOUND` when addressed directly — not `403`, which would confirm that it
+exists. A list with nothing in it is an empty array, not a `404`. Each entry carries the same fields
+checkout returns, so one client component renders a just-placed order, a listed order, and a
+cancelled one.
+
+Cancellation carries **no body** and is **full-order only**: an order item is immutable and holds no
+state of its own, so there is no line for a request to name. A student may cancel only from `PLACED`,
+which is the one status in which the shop has not started work; anything else — already cancelled,
+being prepared, ready, or completed — is `409 ORDER_STATUS_CONFLICT`. The request takes no
+`Idempotency-Key`: a repeat cannot create anything, so it is refused with that same conflict rather
+than replayed.
+
+A cancellation is one transaction. The status changes first, as a conditional update, so two
+simultaneous cancellations cannot both go on to restore stock; the restores then run through the same
+conditional update the admin stock endpoint uses, in a fixed food order so that a cancellation and a
+checkout sharing foods cannot deadlock. A line whose food has since been deleted is skipped and the
+cancellation still succeeds — refusing would trap the order in a status it could never leave. The
+payment row is left exactly as it was, because v1 has no representation of a refund.
+
+### Order administration
+
+`ADMIN` only; a `STUDENT` receives `403`. These live on their own base path rather than beside the
+student routes, because a router-level role check applies to everything beneath its mount, so an
+`ADMIN` could never reach a second router hidden behind the `STUDENT` gate on `/api/v1/orders`.
+
+| Method | Path | Success | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/admin/orders` | `200` | Every order, newest first, with items and the buyer's email |
+| `GET` | `/api/v1/admin/orders/:orderId` | `200` | Any order |
+| `PATCH` | `/api/v1/admin/orders/:orderId` | `200` | Apply one status transition |
+
+An administrative response is the student shape plus `buyerEmail`, because handing an order over
+requires knowing whose it is. It carries no user id.
+
+```http
+PATCH /api/v1/admin/orders/7f3c9a1e-0b2d-4c85-9d61-2f8ab4c07e5a
+Authorization: Bearer <access token>
+Content-Type: application/json
+
+{ "status": "PREPARING" }
+```
+
+Exactly six moves exist, and every other move is refused:
+
+| From | To | Who | Restores stock |
+| --- | --- | --- | --- |
+| `PLACED` | `PREPARING` | `ADMIN` | — |
+| `PREPARING` | `READY` | `ADMIN` | — |
+| `READY` | `COMPLETED` | `ADMIN` | — |
+| `PLACED` | `CANCELLED` | `STUDENT` (own order) or `ADMIN` | Yes |
+| `PREPARING` | `CANCELLED` | `ADMIN` | Yes |
+| `READY` | `CANCELLED` | `ADMIN` | Yes |
+
+Status cannot be skipped, `COMPLETED` and `CANCELLED` are terminal, and no move returns an order to
+`PLACED`. The server never trusts a status it has read a moment earlier: it derives the statuses the
+order must currently be in from the table above and puts them in the `WHERE` clause of a single
+conditional update, so an illegal move and a move another actor made first are both simply zero rows
+changed. Both answer `409 ORDER_STATUS_CONFLICT`, because a client's next step is the same either
+way — read the order and show what it really says.
+
+A status outside the five the column permits is `400 VALIDATION_ERROR`; a real status the order may
+not move to, including `PLACED`, is `409`; an order that does not exist is `404`. A successful move
+answers `200` with the order as the change left it, in the same shape a read returns.
+
+Two things these endpoints deliberately do not do: the list accepts **no query parameters**, so
+filtering by status or shop is not available, and no response carries a shop **name**. Both are
+recorded as open decisions in the architecture rather than settled quietly here.
+
+### Response and error shape
+
 Successful responses return the resource directly, with no envelope. Errors share one structure —
 `{ "error": { "code", "message" } }` — produced only by the central error handler, with a `details`
 array added where a client can act on more than the code. Validation failures name the offending
@@ -505,6 +604,7 @@ something the client sent.
 | `IDEMPOTENCY_KEY_CONFLICT` | `409` |
 | `SHOP_HAS_ORDERS` | `409` |
 | `INSUFFICIENT_STOCK` | `409` |
+| `ORDER_STATUS_CONFLICT` | `409` |
 | `INTERNAL_ERROR` | `500` |
 
 ---
@@ -568,9 +668,17 @@ oversights.
 
 - **Refresh tokens are stateless.** Logout clears the cookie but cannot invalidate a token already
   copied from it, and there is no "sign out everywhere". This is an accepted v1 limitation.
-- **An order cannot be looked at once it is placed.** Checkout returns the order it created, but
-  there is no endpoint yet to read it again, list a student's orders, cancel one, or advance its
-  status. That is the next phase.
+- **A cancelled order keeps its payment.** `PaymentStatus` permits only `SUCCEEDED`, so nothing in v1
+  represents a refund; a cancellation restores stock and leaves the payment row untouched.
+- **An administrator cannot filter the order list**, by status or by shop, and no order response
+  carries its shop's name — only its `shopId`. Both are open decisions in the architecture, and the
+  endpoints were built so that neither is settled by accident: the list accepts no query parameter at
+  all.
+- **A 5xx response can carry a Prisma error code rather than `INTERNAL_ERROR`.** The central error
+  handler forwards the `code` it finds on an error, and an unhandled Prisma fault brings its own
+  (`P2020`, for instance). The message is still replaced with a generic one, so nothing sensitive
+  leaks, but the code is outside the published vocabulary. Recorded as a known defect in the
+  architecture; it predates order management and affects every endpoint.
 - **Payment is simulated.** The payment row is always `SUCCEEDED` and no provider is contacted.
   Introducing a real gateway would mean revisiting checkout's single-transaction shape, because a
   network call cannot live inside a database transaction.
@@ -595,20 +703,18 @@ The order below is the one recorded in `docs/ARCHITECTURE.md`; phases build on e
 | 5 | Cart | **Complete** |
 | 6 | Catalogue administration | **Complete** |
 | 7 | Checkout with inventory, payment simulation, and idempotency | **Complete** |
-| 8 | Order management | **Next** |
-| 9 | Frontend | Planned |
+| 8 | Order management and cancellation | **Complete** |
+| 9 | Frontend | **Next** |
 
 The cart was built before catalogue administration and administration followed it, so both are
 done and the ordering is back on track. Payment simulation was not a phase of its own: it is one
 module inside the checkout transaction.
 
-The next phase is order management: reading one of the caller's own orders, listing them, `ADMIN`
-listing and status transitions, and cancellation. Its shape is already constrained by what exists —
-an order is immutable apart from its status, a status change is a conditional update matching the
-expected current status, and a student's order is read by a query scoped to both the order id and
-the caller, which is the pattern checkout's idempotency lookup established. Whether cancelling
-restores stock, and which transitions each role may make, are recorded as open decisions in the
-architecture and are settled before that code is written.
+**Every backend phase is complete and verified.** The next phase is the frontend, which has not been
+started: `frontend/` holds environment templates and nothing else. It consumes the API documented
+above and adds no server behaviour, so the first questions it will run into are presentational —
+beginning with whether an order response should carry its shop's name, which is one of the two open
+decisions recorded in the architecture.
 
 Each phase follows the same sequence: planned, implemented, tested, reviewed, then committed on its
 own. A phase's behaviour is not described as working until its tests pass.
@@ -656,7 +762,7 @@ npx --no-install prisma migrate status
 
 | Command | Expected result |
 | --- | --- |
-| `npm test` | 305 tests, 305 passing, 0 failing |
+| `npm test` | 378 tests, 378 passing, 0 failing |
 | `prisma validate` | The schema is valid |
 | `prisma migrate status` | Database schema is up to date |
 

@@ -1,15 +1,16 @@
 # Overview
 
 This document records the approved technical architecture for SCC Delicious, a full-stack
-web application. It is an architecture decision document. It describes what we intend to
-build and why. It does not describe anything that has been built.
+web application. It is an architecture decision document: it records what was decided and why,
+rather than describing the code line by line. Each section states whether what it describes has
+been built.
 
-**Status: partially implemented.** The database schema and its migration, the Express
-application foundation, the health endpoint, authentication, read-only catalogue browsing, catalogue
-administration, the cart, and checkout with its simulated payment are built and covered by tests.
-Order management — listing, reading, cancelling, and advancing an order — and the entire frontend
-are design only. Unless a section says otherwise, read it as the intended design rather than as a
-description of working software.
+**Status: the backend is complete for v1; the frontend has not been started.** The database schema
+and its migration, the Express application foundation, the health endpoint, authentication,
+read-only catalogue browsing, catalogue administration, the cart, checkout with its simulated
+payment, and order management — listing and reading orders, cancelling one, and advancing its
+status — are all built and covered by tests. The entire frontend is design only. Unless a section
+says otherwise, read it as the intended design rather than as a description of working software.
 
 The document covers v1 only. It deliberately stops short of settling questions that have not
 been decided, and it deliberately excludes work that v1 does not need. Open questions are
@@ -693,7 +694,8 @@ more of a food may sit in a cart than the shop has, and the shortfall is reporte
 simulated payment, and is covered by tests including the concurrency scenarios this section
 requires. Two mechanisms differ from the numbered sequence that was settled before the code
 existed, both recorded under [Implementation notes](#implementation-notes) with the reason. Reading
-an order, listing orders, cancelling, and advancing status are a later phase and do not exist yet.
+an order, listing orders, cancelling, and advancing status were a later phase and are now built as
+well; see [Order Management](#order-management).
 
 **Checkout revalidates price and inventory on the server.** Nothing about the money or the
 stock position is taken from the request. The server recomputes every line total and the order
@@ -753,8 +755,8 @@ route added to it later cannot be left unguarded, and an `ADMIN` reaching any pa
 receives `403 FORBIDDEN`.
 
 *This was originally recorded as the first of two routers sharing the base path,* with the admin
-order router of the next phase mounted after it behind its own `requireRole("ADMIN")` — the split
-used by [Catalogue Administration](#catalogue-administration). That plan was found to be
+order router mounted after it behind its own `requireRole("ADMIN")` — the split used by
+[Catalogue Administration](#catalogue-administration). That plan was found to be
 unimplementable during the order management design review, for a mechanical reason rather than a
 matter of taste, and the administrative endpoints were moved to their own base path instead. See
 [Where the order endpoints live](#where-the-order-endpoints-live). Nothing about checkout changed as
@@ -989,9 +991,13 @@ reads like a checkout bug.
 
 # Order Management
 
-**Status: design only.** The design below is settled and complete, and the decisions this section
-previously recorded as open are resolved. No order-management endpoint exists yet; nothing here
-describes working software.
+**Status: implemented.** All six endpoints below exist and behave as described, and every rule in
+this section — the transition table, the conditional update, the ownership scoping, the stock
+restoration, and the response shapes — is covered by tests, including the concurrency scenarios and
+the forced rollback this section requires. Every settled parameter holds as written; where the
+implementation had to decide something the design left unnamed, it is recorded under
+[Implementation notes](#implementation-notes-1). The two order-management questions still open are
+in [Future Decisions](#future-decisions), and the endpoints deliberately ship without them.
 
 An order is an immutable record of a completed transaction. Its line items never change after
 creation. The only thing that moves is its status.
@@ -1172,11 +1178,12 @@ The `STUDENT` shape is exactly the one checkout returns — `id`, `shopId`, `sta
 `placedAt`, and `items` of `{ foodId, name, priceMinor, quantity, lineTotalMinor }` — so one client
 component renders a just-placed order, a listed order, and a cancelled one.
 
-**The `ADMIN` shape is that same shape plus the buyer's email.** *Why:* handing an order over
-requires knowing whose it is, and an administrator reconciling a shop's queue cannot work from an
-opaque user id. Two consequences are accepted deliberately: this is the only place in v1 where one
-user's email is exposed to another — `/auth/me` returns only the caller's own — and the
-administrative selection joins to `users`, where checkout's selection joins to nothing at all.
+**The `ADMIN` shape is that same shape plus the buyer's email, carried as `buyerEmail`.** *Why:*
+handing an order over requires knowing whose it is, and an administrator reconciling a shop's queue
+cannot work from an opaque user id. Two consequences are accepted deliberately: this is the only
+place in v1 where one user's email is exposed to another — `/auth/me` returns only the caller's own
+— and the administrative selection joins to `users`, where checkout's selection joins to nothing at
+all.
 
 **Order lists return each order with its full `items` array, ordered newest first by `placedAt`.**
 *Why full items:* one renderer then serves both a list and a single read, and an order is small.
@@ -1203,8 +1210,8 @@ Four additions were considered and **declined**, each of which would be a migrat
 
 ### Concurrency this design must survive
 
-Reasoning is not evidence, so each row below is a test the phase owes, run against a real
-PostgreSQL instance.
+Reasoning is not evidence here either, so each row below is an integration test that exists and runs
+against a real PostgreSQL instance rather than an argument in this document.
 
 | Scenario | Required outcome |
 | --- | --- |
@@ -1215,6 +1222,45 @@ PostgreSQL instance.
 | A student reading or cancelling another student's order | `404`, and no row is read into memory at all |
 | Every move absent from the transition table | `409`, with no status change and no stock movement |
 | A cancelled order's shop, deleted by an administrator | Still refused with `409 SHOP_HAS_ORDERS`; a cancelled order references its shop exactly as any other does |
+
+One row is worth naming, because forcing it took some care. *Transaction rollback when restocking
+fails* is provoked by a real database refusal rather than a stub: the second food a cancellation
+would restore is left one unit short of overflowing its `integer` column, so PostgreSQL refuses that
+statement after the first food has already been restored inside the transaction. The test then
+asserts that neither the status change nor the already-applied restore survived.
+
+### Implementation notes
+
+Order management is `order.validator.js` for the path parameter and the `{ status }` body,
+`order.service.js` for the reads and the transitions, `order.controller.js` and `order.route.js` for
+the student half, and `order-admin.controller.js` and `order-admin.route.js` mounted at
+`/api/v1/admin/orders` for the administrative half. No new stock code exists: restoration calls the
+same `applyStockDelta` from the shop service that checkout consumes stock with, and the ascending
+food id sort is now one comparator shared by both, so the two lock sequences cannot drift apart. No
+migration was needed and none was written.
+
+Every settled parameter above holds as written. Three things the design named no answer for were
+decided while writing the code, and are recorded here rather than left to be discovered:
+
+**A `{ status }` of `PLACED` is `409 ORDER_STATUS_CONFLICT`, not `400 VALIDATION_ERROR`.** The body
+schema accepts every member of the enum, read from the generated client so that the values the API
+accepts cannot drift from the values the column permits. Whether a value is a status at all is the
+schema's question; whether the move is legal is the transition table's, and the table answers with
+the one conflict code. The alternative would make the code a caller receives depend on which illegal
+move they attempted — `400` for asking to go back to `PLACED`, `409` for asking to skip to
+`COMPLETED` — when the answer to both is the same. A status outside the enum is still `400`.
+
+**A target no role may ask for needs no special case.** It has no permitted predecessors, so the
+same conditional update runs with an empty set, matches no row, and is answered by the same second
+look that separates a conflict from a missing order. This is why a made-up order id answers `404`
+whatever status is asked for.
+
+**The buyer's email is `buyerEmail`, a single string on the order.** No user id accompanies it: an
+administrator has no use for one, and checkout deliberately publishes no ownership fields.
+
+*On the two open decisions:* neither is implemented, and the endpoints are built so that neither is
+decided by omission. The administrative list accepts no query parameter at all, so no client can
+come to depend on a filter that has not been designed, and no response carries a shop name.
 
 # API Architecture
 
@@ -1257,7 +1303,7 @@ The vocabulary in use, which the frontend may match on:
 | `INVALID_CREDENTIALS` | `401` | Sign-in failed, deliberately without saying why |
 | `INVALID_REFRESH_TOKEN` | `401` | The refresh cookie is absent, invalid, or names a deleted account |
 | `FORBIDDEN` | `403` | Authenticated, but this role may not perform this class of action |
-| `NOT_FOUND` | `404` | No route matches the request |
+| `NOT_FOUND` | `404` | No route matches the request, or the addressed resource does not exist — or, for a resource scoped to its owner, does not belong to the caller |
 | `EMAIL_ALREADY_REGISTERED` | `409` | Registration for an address that already has an account |
 | `CART_SHOP_MISMATCH` | `409` | Adding a food from a shop other than the one the cart holds |
 | `CART_EMPTY` | `409` | Checkout with no cart, or a cart with no lines |
@@ -1354,9 +1400,10 @@ many deployed environments exist beyond that remains open.
 
 # Testing Strategy
 
-This section states what testing consists of. Application bootstrap, the health endpoint,
-authentication, read-only catalogue browsing, catalogue administration, and the cart are covered so
-far; anything below that is not marked as covered describes intent rather than existing coverage.
+This section states what testing consists of. Every backend phase is covered: application bootstrap,
+the health endpoint, authentication, read-only catalogue browsing, catalogue administration, the
+cart, checkout with its payment simulation, and order management. Anything below that is not marked
+as covered describes intent rather than existing coverage.
 
 - **Unit tests** for pure logic: total and line-item calculation, order status transition
   rules, and validation schemas. *Why here:* these are fast, deterministic, and cover the
@@ -1371,11 +1418,13 @@ far; anything below that is not marked as covered describes intent rather than e
 Scenarios treated as mandatory rather than optional:
 
 1. Registration always produces `STUDENT` and cannot assign `ADMIN`. **Covered.**
-2. A caller cannot read or modify another user's cart or orders. *Partly covered:* the cart half
-   is tested — another user's cart cannot be read, changed, cleared, or removed from — and checkout
-   is tested to order from the caller's own cart, to record the caller as the buyer, and to disclose
-   nothing about another user's order when their idempotency key is reused. There is no endpoint yet
-   that reads an order back, so that half arrives with order management.
+2. A caller cannot read or modify another user's cart or orders. **Covered**, both halves. Another
+   user's cart cannot be read, changed, cleared, or removed from; checkout orders only from the
+   caller's own cart, records the caller as the buyer, and discloses nothing about another user's
+   order when their idempotency key is reused. With order management built, the order half is tested
+   directly: another student's order is absent from the caller's list, and reading or cancelling it
+   by id answers `404` rather than `403`, because the query is scoped to the caller and never
+   finds it.
 3. Administrative endpoints reject a `STUDENT` caller, and reject mismatched parent-child
    resource pairs. **Covered** by the catalogue administration phase, over HTTP, for every write
    endpoint.
@@ -1392,6 +1441,14 @@ Scenarios treated as mandatory rather than optional:
    the data invariants reference already phrases it.*
 8. An order's line totals sum to its order total and to its payment amount. **Covered**, read back
    from the database rather than from the response.
+9. Two simultaneous cancellations of one order restore its stock exactly once. **Covered**, as two
+   requests and again as six: one `200`, the rest `409 ORDER_STATUS_CONFLICT`, and stock back to
+   exactly what it was before the order. A student cancellation racing an administrator's advance is
+   covered the same way, repeated, with the surviving status and the stock required to agree.
+10. Every move the transition table does not permit is refused, and no illegal move touches stock.
+    **Covered** by walking all twenty-five from-and-to pairs against a table written out in the test
+    independently of the service: the six legal moves answer `200`, the other nineteen answer `409`
+    with the order's status unchanged.
 
 **Tooling.** Tests run on Node's built-in runner, `node:test`, and integration tests drive HTTP
 with the built-in `fetch` against an application bound to an ephemeral port. Neither requires a
@@ -1519,25 +1576,45 @@ restructuring what is described above.
 - **Rate limiting, additional security headers, and audit logging.**
 - **Per-administrator shop assignment.** `ADMIN` is platform-wide in v1.
 
+# Known Defects
+
+Faults in built code, as distinct from decisions not yet made and from work deliberately left out.
+Recorded here so that a known defect is not rediscovered as a surprise, and so that the sections
+above can be read as describing the intended behaviour without quietly implying it is all correct.
+
+- **A 5xx response can carry a Prisma error code instead of `INTERNAL_ERROR`.** The central error
+  handler reads `code` off the error it is given, and an unhandled Prisma fault carries one of
+  Prisma's own — `P2020` for a value outside a column's range, for example. The `message` is still
+  replaced with the generic one, so nothing sensitive leaks, but the `code` a client receives is
+  outside the vocabulary [API Architecture](#api-architecture) publishes, and a client matching on
+  that vocabulary sees a value it cannot account for. *Found during the order management phase, by
+  the test that forces a restore to overflow its column; it is not specific to order management and
+  affects every endpoint.* The fix belongs in the error handler — a `code` should be published only
+  when the error was raised deliberately as a client error — and is deliberately not part of that
+  phase, because changing how every unhandled fault is reported is its own change with its own tests.
+
 # Future Decisions
 
 The following are genuinely undecided. They are recorded so that they are settled explicitly
 rather than by accident during implementation. Items that block a specific phase are marked.
 
-**Blocks order management**
+**Open on order management, which is built without them**
 
-Both items previously listed here — the permitted status transitions with who may perform each, and
-whether an order can be cancelled partially or only in full — are resolved and recorded under
+Both items once listed here as blocking — the permitted status transitions with who may perform each,
+and whether an order can be cancelled partially or only in full — are resolved and recorded under
 [Settled order management parameters](#settled-order-management-parameters). Two smaller questions
-took their place, surfaced by the same review, and each changes the API surface enough that
-implementing around it would be deciding it by omission:
+took their place, surfaced by the same review. Neither blocked the phase: the endpoints shipped
+without them, built so that neither is decided by omission — the administrative list accepts no query
+parameter at all, and no response carries a shop name. Both remain open, and adding either is a
+change to the API surface rather than a detail:
 
 - Whether an `ADMIN` may filter the order list by status or by shop. Nothing in the codebase
   validates a query string yet, so this would introduce that pattern, and `orders` carries no index
   on `status`.
-- Whether an order response carries its shop's **name** as well as its `shopId`. Checkout exposes the
-  identifier alone, and unlike a food's name a shop's name is not snapshotted anywhere, so a list
-  otherwise renders an opaque identifier unless the client resolves it separately.
+- Whether an order response carries its shop's **name** as well as its `shopId`. Every order
+  response exposes the identifier alone, and unlike a food's name a shop's name is not snapshotted
+  anywhere, so a list renders an opaque identifier unless the client resolves it separately. This is
+  the first question the frontend phase will run into.
 
 **Not blocking**
 
@@ -1563,10 +1640,10 @@ the document. Each was resolved by the project owner, not assumed during impleme
 - **The payment status list is `SUCCEEDED` alone.** This was never recorded as an open question:
   the column existed with no defined values, which was found during a schema audit. See
   [Checkout and Payment](#checkout-and-payment).
-- **The checkout endpoint parameters** — a `STUDENT`-only `/api/v1/orders` router mounted ahead of
-  the future admin one, a required `Idempotency-Key` header of 16 to 128 opaque characters, `201`
-  on creation against `200` on a same-user replay, `409 IDEMPOTENCY_KEY_CONFLICT` for a key owned
-  by someone else, `409 CART_EMPTY`, `409 CART_MODIFIED`, and `INSUFFICIENT_STOCK` details naming
+- **The checkout endpoint parameters** — a `STUDENT`-only `/api/v1/orders` router, a required
+  `Idempotency-Key` header of 16 to 128 opaque characters, `201` on creation against `200` on a
+  same-user replay, `409 IDEMPOTENCY_KEY_CONFLICT` for a key owned by someone else,
+  `409 CART_EMPTY`, `409 CART_MODIFIED`, and `INSUFFICIENT_STOCK` details naming
   the food — were resolved by the project owner during the checkout design review, before any
   implementation existed. The first two of these were previously listed as blocking checkout. See
   [Settled checkout parameters](#settled-checkout-parameters).
@@ -1675,9 +1752,9 @@ to add.
 **The cart was in the event built before catalogue administration**, and administration followed
 it rather than being dropped. Nothing in the cart depended on it: the cart needs foods to exist,
 not endpoints that create them, and its tests seed the catalogue directly through Prisma as the
-browsing tests already did. Both phases are complete, and checkout has since been built on top of
-them, so the ordering above has been followed since. Order management is the only backend phase
-left.
+browsing tests already did. Both phases are complete, and checkout and order management have since
+been built on top of them, in that order, so the ordering above has been followed since. **Every
+backend phase is now complete and verified; the frontend is the only phase left.**
 
 Two commitments follow from this and apply to all future work on the project. Documentation and
 status reports must distinguish functionality that has been implemented from functionality that
