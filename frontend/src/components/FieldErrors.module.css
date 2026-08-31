@@ -1,0 +1,15 @@
+.fieldError {
+  margin: 0.25rem 0 0;
+  font-size: 0.875rem;
+  color: var(--danger-text);
+}
+
+.formError {
+  margin: 0;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm);
+  background: var(--danger-surface);
+  color: var(--danger-text);
+  font-size: 0.9375rem;
+}
