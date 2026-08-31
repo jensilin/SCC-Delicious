@@ -22,12 +22,16 @@ import { api } from "../../lib/api-client";
  */
 
 /**
- * The cart. A user who has never added anything has no cart row, and the API describes that state
- * directly rather than answering 404 or writing a row on a GET: `id` and `shopId` are null and
- * `items` is empty. A null `id` is therefore ordinary, not an error.
+ * The cart.
  *
- * `shopId` is the single-shop rule made visible — it is null while the cart is empty and names the
- * one shop the cart holds items from otherwise.
+ * There are two shapes of empty and a screen must treat them alike. A user who has never added
+ * anything has no cart row at all, which the API describes directly rather than answering 404 or
+ * writing a row on a GET: `id` is null. A cart that once held items and was emptied keeps its row, so
+ * `id` is a uuid while `items` is still empty. Emptiness is therefore `items.length === 0`, never a
+ * null id.
+ *
+ * `shopId` is the single-shop rule made visible — it is null whenever the cart is empty, however it
+ * got that way, and names the one shop the cart holds items from otherwise.
  *
  * @typedef {object} Cart
  * @property {string | null} id

@@ -1,0 +1,42 @@
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.step {
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 1.0625rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.step:hover:not(:disabled) {
+  background: var(--surface-muted);
+  color: var(--accent);
+}
+
+.step:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.value {
+  min-width: 2.25rem;
+  padding: 0 0.25rem;
+  text-align: center;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  line-height: 2rem;
+}

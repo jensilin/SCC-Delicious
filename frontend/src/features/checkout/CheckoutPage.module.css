@@ -1,0 +1,81 @@
+.stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.shopLine {
+  padding: 0.8125rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-muted);
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.shopName {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.8125rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.quantity {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lineTotal {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.totals {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.125rem 1.25rem;
+}
+
+.totalLabel {
+  font-weight: 600;
+}
+
+.total {
+  font-size: 1.375rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.confirm {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  max-width: 46ch;
+}

@@ -1,0 +1,64 @@
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.lines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.line {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.875rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.details {
+  flex: 1;
+  min-width: 0;
+}
+
+.name {
+  margin: 0;
+  font-weight: 600;
+}
+
+.breakdown {
+  margin: 0.1875rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.removed {
+  font-style: italic;
+}
+
+.lineTotal {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.totals {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.125rem 1.25rem;
+}
+
+.totalLabel {
+  font-weight: 600;
+}
+
+.total {
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}

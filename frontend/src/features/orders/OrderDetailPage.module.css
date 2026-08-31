@@ -1,0 +1,54 @@
+.stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.statusCard {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1.125rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.statusText {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.description {
+  margin: 0.3125rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.meta {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.metaRow {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.metaLabel {
+  min-width: 6.5rem;
+  color: var(--text-muted);
+}
+
+.metaValue {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.reference {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8125rem;
+}

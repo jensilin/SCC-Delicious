@@ -37,14 +37,6 @@ function listShops() {
 }
 
 /**
- * @param {string} shopId
- * @returns {Promise<Shop>} 200, or 404 NOT_FOUND.
- */
-function getShop(shopId) {
-  return api.get(`/shops/${shopId}`);
-}
-
-/**
  * A shop's foods, ordered by name. Read through the shop, so a missing shop is a 404 rather than an
  * empty list — an empty array means the shop exists and has no menu yet.
  *
@@ -55,16 +47,9 @@ function listShopFoods(shopId) {
   return api.get(`/shops/${shopId}/foods`);
 }
 
-/**
- * A food is only ever addressed through its shop, and the pair is what the lookup is scoped by, so a
- * real food id under the wrong shop is 404 rather than a leak.
- *
- * @param {string} shopId
- * @param {string} foodId
- * @returns {Promise<Food>} 200, or 404 NOT_FOUND.
- */
-function getShopFood(shopId, foodId) {
-  return api.get(`/shops/${shopId}/foods/${foodId}`);
-}
+// The API also offers GET /shops/:shopId and GET /shops/:shopId/foods/:foodId. Neither is wrapped
+// here, because no screen has anything to ask them: a shop's name comes from the directory the list
+// above already fills, and a food's list entry carries every field the API publishes about it, so a
+// per-food read would return what is already on screen.
 
-export { getShop, getShopFood, listShopFoods, listShops };
+export { listShopFoods, listShops };

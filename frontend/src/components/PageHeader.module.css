@@ -1,0 +1,40 @@
+.header {
+  margin-bottom: 1.5rem;
+}
+
+.back {
+  display: inline-block;
+  margin-bottom: 0.625rem;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.back:hover {
+  color: var(--accent);
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.title {
+  font-size: 1.5rem;
+}
+
+.subtitle {
+  margin: 0.3125rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.9375rem;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}

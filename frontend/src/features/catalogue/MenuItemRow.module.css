@@ -1,0 +1,45 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.details {
+  flex: 1;
+  min-width: 0;
+}
+
+.name {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.stock {
+  margin: 0.1875rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.outOfStock {
+  color: var(--danger-text);
+  font-weight: 600;
+}
+
+.price {
+  font-size: 1rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}

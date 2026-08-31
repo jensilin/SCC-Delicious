@@ -1,3 +1,4 @@
+import { Button } from "./Button";
 import styles from "./feedback.module.css";
 
 /**
@@ -33,11 +34,7 @@ function ErrorState({ error, title = "Something went wrong", onRetry }) {
         </ul>
       ) : null}
 
-      {canRetry ? (
-        <button type="button" className={styles.button} onClick={onRetry}>
-          Try again
-        </button>
-      ) : null}
+      {canRetry ? <Button onClick={onRetry}>Try again</Button> : null}
     </div>
   );
 }

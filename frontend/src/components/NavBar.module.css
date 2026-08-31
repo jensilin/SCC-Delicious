@@ -40,6 +40,20 @@
   border-bottom-color: var(--accent);
 }
 
+.badge {
+  display: inline-block;
+  min-width: 1.25rem;
+  margin-left: 0.375rem;
+  padding: 0 0.3125rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.25rem;
+  text-align: center;
+}
+
 .session {
   display: flex;
   align-items: center;
