@@ -1,4 +1,9 @@
-const { placeOrder } = require("../services/order.service");
+const {
+  cancelOwnOrder,
+  getOwnOrder,
+  listOwnOrders,
+  placeOrder,
+} = require("../services/order.service");
 const { IDEMPOTENCY_KEY_HEADER } = require("../validators/order.validator");
 
 // The buyer comes from request.auth, which the access-token middleware fills from the verified token,
@@ -20,4 +25,29 @@ async function postOrder(request, response) {
   response.status(created ? 201 : 200).json(order);
 }
 
-module.exports = { postOrder };
+// The order id is the only thing these three read from the request besides the caller's identity,
+// and it is never enough on its own: the service pairs it with request.auth.userId, so an id
+// belonging to another student's order simply matches nothing.
+async function getMyOrders(request, response) {
+  response.status(200).json(await listOwnOrders(request.auth.userId));
+}
+
+async function getMyOrder(request, response) {
+  const { orderId } = request.validated.params;
+
+  response.status(200).json(await getOwnOrder(request.auth.userId, orderId));
+}
+
+// 200 with the cancelled order rather than 204, because what the caller needs next is the status the
+// order now carries, and returning it avoids a follow-up read that could observe a further change.
+//
+// A cancellation is not idempotent and deliberately carries no key: a repeated request finds the
+// order already cancelled and is refused with ORDER_STATUS_CONFLICT, which is the honest answer —
+// unlike a repeated checkout, a repeated cancellation cannot create anything.
+async function postMyOrderCancellation(request, response) {
+  const { orderId } = request.validated.params;
+
+  response.status(200).json(await cancelOwnOrder(request.auth.userId, orderId));
+}
+
+module.exports = { getMyOrder, getMyOrders, postMyOrderCancellation, postOrder };

@@ -8,7 +8,10 @@ const {
   IDEMPOTENCY_KEY_HEADER,
   MAX_IDEMPOTENCY_KEY_LENGTH,
   MIN_IDEMPOTENCY_KEY_LENGTH,
+  ORDER_STATUSES,
   checkoutHeadersSchema,
+  orderParamsSchema,
+  statusChangeSchema,
 } = require("../../src/validators/order.validator");
 
 function headers(key) {
@@ -150,4 +153,84 @@ test("every other header is stripped, so a handler cannot read unchecked input",
   });
 
   assert.deepEqual(Object.keys(parsed), [IDEMPOTENCY_KEY_HEADER]);
+});
+
+// --- The order id in the path --------------------------------------------------------------------
+
+test("a UUID is accepted as an order id", () => {
+  const orderId = crypto.randomUUID();
+
+  assert.deepEqual(orderParamsSchema.parse({ orderId }), { orderId });
+});
+
+test("anything that is not a UUID is rejected, and the failing field is named", () => {
+  for (const orderId of ["", "1", "not-a-uuid", crypto.randomUUID().replace(/-/g, ""), 42, null]) {
+    const result = orderParamsSchema.safeParse({ orderId });
+
+    assert.equal(result.success, false, `expected ${JSON.stringify(orderId)} to be rejected`);
+    assert.equal(result.error.issues[0].path.join("."), "orderId");
+  }
+});
+
+test("a missing order id is rejected rather than treated as a collection request", () => {
+  assert.equal(orderParamsSchema.safeParse({}).success, false);
+});
+
+// --- The status a change asks for ----------------------------------------------------------------
+
+test("the accepted vocabulary is the database's own order statuses", () => {
+  // Read from the generated enum rather than listed again, so this is the schema's five values and
+  // not a copy that could fall behind it.
+  assert.deepEqual([...ORDER_STATUSES].sort(), [
+    "CANCELLED",
+    "COMPLETED",
+    "PLACED",
+    "PREPARING",
+    "READY",
+  ]);
+});
+
+test("every status the column permits is accepted by the schema", () => {
+  // Including PLACED, which no transition targets. Whether a value is a status at all is this
+  // schema's question; whether the move is legal belongs to the transition table, which refuses with
+  // ORDER_STATUS_CONFLICT rather than a validation failure.
+  for (const status of ORDER_STATUSES) {
+    assert.deepEqual(statusChangeSchema.parse({ status }), { status });
+  }
+});
+
+test("a status outside the enum is rejected and the message lists the real ones", () => {
+  const result = statusChangeSchema.safeParse({ status: "PREPARED" });
+
+  assert.equal(result.success, false);
+  assert.equal(result.error.issues[0].path.join("."), "status");
+
+  for (const status of ORDER_STATUSES) {
+    assert.match(result.error.issues[0].message, new RegExp(status));
+  }
+});
+
+test("a status is case-sensitive and is never coerced", () => {
+  for (const status of ["placed", "Cancelled", "READY ", " READY", 1, true, null, ["READY"]]) {
+    assert.equal(
+      statusChangeSchema.safeParse({ status }).success,
+      false,
+      `expected ${JSON.stringify(status)} to be rejected`,
+    );
+  }
+});
+
+test("a body with no status is rejected", () => {
+  assert.equal(statusChangeSchema.safeParse({}).success, false);
+});
+
+test("every other field in the body is stripped, so nothing else can be patched", () => {
+  const parsed = statusChangeSchema.parse({
+    status: "PREPARING",
+    totalMinor: 1,
+    userId: crypto.randomUUID(),
+    items: [],
+  });
+
+  assert.deepEqual(Object.keys(parsed), ["status"]);
 });

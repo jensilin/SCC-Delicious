@@ -8,6 +8,7 @@ const { notFound } = require("./middleware/not-found.middleware");
 const authRoute = require("./routes/auth.route");
 const cartRoute = require("./routes/cart.route");
 const healthRoute = require("./routes/health.route");
+const orderAdminRoute = require("./routes/order-admin.route");
 const orderRoute = require("./routes/order.route");
 const shopAdminRoute = require("./routes/shop-admin.route");
 const shopRoute = require("./routes/shop.route");
@@ -60,11 +61,16 @@ function createApp() {
   // token names it, so there is no collection here to paginate or to enumerate.
   app.use("/api/v1/cart", cartRoute);
 
-  // The student half of /api/v1/orders: checkout, and later the reads of a caller's own orders. It is
-  // mounted first for the same reason browsing precedes catalogue administration — the admin order
-  // router a later phase adds will carry a router-level ADMIN check, and mounting that ahead of this
-  // one would close checkout to the students it exists for.
+  // STUDENT-only: checkout, the caller's own orders, and cancelling one of them. The router carries a
+  // router-level STUDENT check, so an ADMIN reaching any path beneath this base path is refused.
   app.use("/api/v1/orders", orderRoute);
+
+  // Which is why the administrative half is a base path of its own rather than a second router here.
+  // A role check attached to a router applies to everything entering it, so an ADMIN never gets past
+  // the check above to reach a router mounted behind it. `admin` is the one path segment in v1 that
+  // names a privilege rather than a resource, and the mount order of these two does not matter
+  // because neither path is a prefix of the other.
+  app.use("/api/v1/admin/orders", orderAdminRoute);
 
   app.use(notFound);
   app.use(errorHandler);

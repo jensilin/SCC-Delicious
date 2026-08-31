@@ -1,3 +1,4 @@
+const { OrderStatus } = require("@prisma/client");
 const { z } = require("zod");
 
 // The idempotency key travels in a header rather than in the body. Every value checkout uses — the
@@ -43,10 +44,37 @@ const checkoutHeadersSchema = z.object({
   [IDEMPOTENCY_KEY_HEADER]: idempotencyKeySchema,
 });
 
+// --- Reading and moving an existing order --------------------------------------------------------
+
+// An order id arrives as a path segment, which is always a string and always client-supplied.
+// Checking its shape here means the service can hand the value straight to Prisma, and a caller
+// probing with a non-identifier gets the standard validation response rather than a database error.
+const orderParamsSchema = z.object({
+  orderId: z.uuid("must be a valid UUID"),
+});
+
+// Read from the generated enum rather than written out again, so the statuses this API accepts
+// cannot drift from the ones the column permits. Adding a value to the schema's enum adds it here.
+const ORDER_STATUSES = Object.values(OrderStatus);
+
+// Every member of the enum is accepted, including PLACED, which no transition targets. Whether a
+// value is a status at all is this schema's question; whether a move to it is legal from where the
+// order currently stands belongs to the transition table, which refuses with ORDER_STATUS_CONFLICT.
+//
+// Splitting that between the two would make the code a caller receives depend on which illegal move
+// they attempted — 400 for asking to go back to PLACED, 409 for asking to skip to COMPLETED — when
+// the answer to both is the same: that is not a move you can make on this order.
+const statusChangeSchema = z.object({
+  status: z.enum(ORDER_STATUSES, `must be one of ${ORDER_STATUSES.join(", ")}`),
+});
+
 module.exports = {
   IDEMPOTENCY_KEY_HEADER,
   MAX_IDEMPOTENCY_KEY_LENGTH,
   MIN_IDEMPOTENCY_KEY_LENGTH,
+  ORDER_STATUSES,
   checkoutHeadersSchema,
   idempotencyKeySchema,
+  orderParamsSchema,
+  statusChangeSchema,
 };

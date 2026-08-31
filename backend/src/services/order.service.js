@@ -10,6 +10,8 @@ const CART_EMPTY = "CART_EMPTY";
 // Generous rather than default. Ten simultaneous checkouts for one food queue on that food's row,
 // each holding its connection while it waits, and the defaults — two seconds to be admitted and five
 // to finish — turn ordinary contention into a failure that reads like a checkout bug.
+//
+// A cancellation queues on the same rows, for the same reason, so it runs under the same allowance.
 const TRANSACTION_OPTIONS = { maxWait: 20_000, timeout: 20_000 };
 
 // Selected explicitly, and only from columns that never change once the order is written. That is
@@ -39,6 +41,21 @@ const orderSelect = {
   },
 };
 
+// What an administrator sees: the same order, plus who bought it. Handing an order over requires
+// knowing whose it is, and a queue of opaque user ids cannot be worked from.
+//
+// The email is the only thing joined from the user. This is the one place in v1 where one user's
+// address is exposed to another, so it is a named column rather than the whole row.
+const adminOrderSelect = {
+  ...orderSelect,
+  user: { select: { email: true } },
+};
+
+// Newest first, so the list opens on what a shop or a buyer is most likely to be looking for.
+// Explicit because without an order PostgreSQL may return rows in any sequence, which would make
+// both the interface and its tests unpredictable.
+const newestFirst = { placedAt: "desc" };
+
 function cartEmpty() {
   return httpError(409, CART_EMPTY, "There is nothing in your cart to order");
 }
@@ -57,6 +74,22 @@ function idempotencyKeyConflict() {
 
 function foodNotFound() {
   return httpError(404, "NOT_FOUND", "Food not found");
+}
+
+function orderNotFound() {
+  return httpError(404, "NOT_FOUND", "Order not found");
+}
+
+// One code for both refusals, because a client's next move is the same either way: read the order
+// and show what it actually says. An illegal move and a move another actor made first are not
+// reliably distinguishable anyway — between the attempt and any explanatory read the order can move
+// again — so the message names the order's status as the reason without claiming which case it was.
+function orderStatusConflict() {
+  return httpError(
+    409,
+    "ORDER_STATUS_CONFLICT",
+    "This order is not in a status that permits that change",
+  );
 }
 
 // The detail names the food rather than a request field, because what the client has to act on is a
@@ -86,6 +119,22 @@ function toOrderView(order) {
       lineTotalMinor: item.lineTotalMinor,
     })),
   };
+}
+
+// The buyer's address, and nothing else about them: no user id, because an administrator has no use
+// for one and checkout deliberately publishes no ownership fields.
+function toAdminOrderView(order) {
+  return { ...toOrderView(order), buyerEmail: order.user.email };
+}
+
+// The lock ordering every stock movement in this module follows, whether a checkout is consuming
+// stock or a cancellation is returning it. Two transactions holding the same foods then acquire
+// those row locks in one sequence; in opposite sequences each can end up holding what the other
+// needs next, which PostgreSQL resolves by killing one of them.
+//
+// One comparator rather than one per call site, so the two sequences cannot drift apart.
+function byAscendingFoodId(left, right) {
+  return left.foodId.localeCompare(right.foodId);
 }
 
 // Scoped to the caller, always. orders.idempotency_key is unique across the whole table rather than
@@ -196,9 +245,8 @@ async function runCheckout(tx, userId, idempotencyKey) {
   });
 
   // Ascending food id, so two checkouts holding two of the same foods acquire those row locks in the
-  // same sequence. In opposite sequences each can end up holding what the other needs next, which
-  // PostgreSQL resolves by killing one of them.
-  const consumption = [...items].sort((left, right) => left.foodId.localeCompare(right.foodId));
+  // same sequence — and so does a cancellation returning stock for the same foods.
+  const consumption = [...items].sort(byAscendingFoodId);
 
   for (const item of consumption) {
     // The one implementation of a stock movement, called with a negative delta. The quantity is never
@@ -281,4 +329,187 @@ async function placeOrder(userId, idempotencyKey) {
   }
 }
 
-module.exports = { placeOrder };
+// --- Reading an order ----------------------------------------------------------------------------
+//
+// A student's reads are scoped to the caller and an administrator's are not, which is the only
+// difference between the two pairs below. The scope is part of every query rather than a comparison
+// made afterwards, so an order belonging to someone else is never loaded at all — and because it is
+// never found, it is reported missing rather than forbidden. Answering "forbidden" would confirm
+// that the order exists.
+
+async function listOwnOrders(userId) {
+  const orders = await prisma.order.findMany({
+    where: { userId },
+    select: orderSelect,
+    orderBy: newestFirst,
+  });
+
+  return orders.map(toOrderView);
+}
+
+// findFirst rather than findUnique, because the id alone is not the whole key here: the caller's id
+// is the rest of it, and a query that can only be satisfied by both cannot be made to leak by a
+// later edit that forgets a comparison.
+async function getOwnOrder(userId, orderId) {
+  const order = await prisma.order.findFirst({
+    where: { id: orderId, userId },
+    select: orderSelect,
+  });
+
+  if (!order) {
+    throw orderNotFound();
+  }
+
+  return toOrderView(order);
+}
+
+async function listAllOrders() {
+  const orders = await prisma.order.findMany({ select: adminOrderSelect, orderBy: newestFirst });
+
+  return orders.map(toAdminOrderView);
+}
+
+async function getAnyOrder(orderId) {
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: adminOrderSelect,
+  });
+
+  if (!order) {
+    throw orderNotFound();
+  }
+
+  return toAdminOrderView(order);
+}
+
+// --- Moving an order -----------------------------------------------------------------------------
+
+// The settled transition table, read as "the status a role may ask for, and the statuses an order
+// must already be in for that move to be legal".
+//
+// That direction is what makes the conditional update possible: the permitted predecessors go into
+// the WHERE clause, so the database decides whether the move is legal at the moment it applies it,
+// rather than this service deciding from a status it read a moment earlier.
+//
+// Three properties are the table's shape rather than rules written beside it. COMPLETED and
+// CANCELLED appear only as targets and never as predecessors, which is the whole of what makes them
+// terminal. Each advancement lists exactly one predecessor, so no status can be skipped. And a
+// STUDENT has one row, so a student may cancel and may do nothing else.
+const TRANSITIONS = {
+  STUDENT: {
+    CANCELLED: ["PLACED"],
+  },
+  ADMIN: {
+    PREPARING: ["PLACED"],
+    READY: ["PREPARING"],
+    COMPLETED: ["READY"],
+    CANCELLED: ["PLACED", "PREPARING", "READY"],
+  },
+};
+
+const CANCELLED = "CANCELLED";
+
+// Returns to the shelf exactly what the order took.
+//
+// The status has already been changed by the conditional update this is called from, and that update
+// holds the order row's write lock for the rest of the transaction. A second cancellation is
+// therefore waiting on that lock, and when it is granted the order is already CANCELLED and no
+// predecessor matches — so stock is returned once per order however many callers ask for it.
+async function restoreStock(tx, orderId) {
+  const items = await tx.orderItem.findMany({
+    where: { orderId },
+    select: { foodId: true, quantity: true },
+  });
+
+  // A null reference means the food was deleted after the order was placed. There is no inventory
+  // left to correct, so the line is skipped and the cancellation goes on: refusing would trap the
+  // order in a status it could never leave, and would let deleting a food break a cancellation
+  // months later. The line itself keeps its snapshots either way.
+  const restorable = items.filter((item) => item.foodId !== null).sort(byAscendingFoodId);
+
+  for (const item of restorable) {
+    // The one implementation of a stock movement, called with a positive delta. Its affected-row
+    // count is not inspected here, and that is deliberate: the condition it carries is
+    // `quantity >= -delta`, which a positive delta makes true of every non-negative quantity, so a
+    // restore is never refused. Zero rows would mean the food has been deleted since the lines above
+    // were read — the null case arriving a moment later, skipped for the same reason.
+    await applyStockDelta(tx, { id: item.foodId }, item.quantity);
+  }
+}
+
+// One conditional update, whichever move was asked for.
+//
+// `scope` carries the order id and, for a student, the caller's id, so a student's transition is
+// bounded by ownership in the same statement that bounds it by status. Nothing is read and compared
+// first: a status read into JavaScript and written back is the same race as a stock quantity read
+// and written back, and a cancellation applied twice would return the stock twice.
+async function runStatusChange(tx, { scope, status, predecessors, select }) {
+  const changed = await tx.order.updateMany({
+    where: { ...scope, status: { in: predecessors } },
+    data: { status },
+  });
+
+  if (changed.count === 0) {
+    // Nothing moved for one of two reasons and only a second look says which, exactly as a refused
+    // stock movement is separated from a missing food: the order is out of this caller's reach, or it
+    // is in reach and is not in a status this move may start from.
+    const reachable = await tx.order.findFirst({ where: scope, select: { id: true } });
+
+    throw reachable ? orderStatusConflict() : orderNotFound();
+  }
+
+  if (status === CANCELLED) {
+    await restoreStock(tx, scope.id);
+  }
+
+  // Read back inside the transaction, so the body describes the order as this change left it. The
+  // row's write lock is held until the commit, so no other transition can land between the two.
+  return tx.order.findFirst({ where: scope, select });
+}
+
+// A target this role never has — a student asking for anything but a cancellation, or anyone asking
+// for PLACED — has no permitted predecessors. It needs no special case: an empty set matches no row,
+// so the same conditional update refuses it and the same second look decides whether the answer is
+// a conflict or a missing order.
+function applyStatusChange({ scope, role, status, select }) {
+  const predecessors = TRANSITIONS[role]?.[status] ?? [];
+
+  return prisma.$transaction(
+    (tx) => runStatusChange(tx, { scope, status, predecessors, select }),
+    TRANSACTION_OPTIONS,
+  );
+}
+
+async function cancelOwnOrder(userId, orderId) {
+  const order = await applyStatusChange({
+    scope: { id: orderId, userId },
+    role: "STUDENT",
+    status: CANCELLED,
+    select: orderSelect,
+  });
+
+  return toOrderView(order);
+}
+
+// An administrative cancellation is a transition like any other: the table decides whether the move
+// is legal, and a cancellation is the one target that also returns stock.
+async function setOrderStatus(orderId, status) {
+  const order = await applyStatusChange({
+    scope: { id: orderId },
+    role: "ADMIN",
+    status,
+    select: adminOrderSelect,
+  });
+
+  return toAdminOrderView(order);
+}
+
+module.exports = {
+  cancelOwnOrder,
+  getAnyOrder,
+  getOwnOrder,
+  listAllOrders,
+  listOwnOrders,
+  placeOrder,
+  setOrderStatus,
+};
