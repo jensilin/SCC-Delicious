@@ -17,11 +17,28 @@ function toSeconds(timeSpan) {
 
 // Secure is off outside production because the cookie would otherwise never be sent over the plain
 // http:// used locally, making the refresh endpoint impossible to exercise in development or tests.
+//
+// SameSite differs for the same reason the deployment does. In production the browser application
+// and the API are served from two Vercel domains, and two Vercel domains are two *sites*:
+// `vercel.app` is a public suffix, so `something.vercel.app` is a registrable domain of its own and
+// a request from one to another is cross-site. A SameSite=Strict cookie is never attached to a
+// cross-site request, so the refresh cookie would be set at login and then never sent back — every
+// reload would end the session. `none` is the value that permits it, and a browser accepts that
+// value only together with Secure, which production supplies.
+//
+// Nothing else is loosened, and the token itself is no more exposed than before. HttpOnly still
+// keeps it out of JavaScript, so a script on either origin cannot read it. Path still confines it to
+// /api/v1/auth, so it rides on four routes rather than on every request. What SameSite=None gives up
+// is the guarantee that a request carrying the cookie was initiated by our own site, and what that
+// would buy an attacker here is a forged POST to /auth/refresh: it mints an access token into a
+// response body that the same-origin policy forbids them from reading, and it changes no state.
+const isProduction = env.NODE_ENV === "production";
+
 const cookieOptions = {
   httpOnly: true,
   path: REFRESH_COOKIE_PATH,
-  sameSite: "strict",
-  secure: env.NODE_ENV === "production",
+  sameSite: isProduction ? "none" : "strict",
+  secure: isProduction,
 };
 
 function setRefreshCookie(response, refreshToken) {
