@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { Button, ButtonLink } from "../../components/Button";
@@ -8,6 +8,7 @@ import { Notice } from "../../components/Notice";
 import { PageHeader } from "../../components/PageHeader";
 import { STATUS_DESCRIPTIONS, StatusBadge } from "../../components/StatusBadge";
 import { formatTimestamp } from "../../lib/datetime";
+import { ADMIN_ORDER_DETAIL_POLL_MS, usePolledResource } from "../../lib/use-polled-resource";
 import { useShopDirectory } from "../catalogue/shop-directory";
 import { OrderItemsTable } from "../orders/OrderItemsTable";
 import { getOrder, setOrderStatus } from "./api";
@@ -26,33 +27,28 @@ function AdminOrderDetailPage() {
   const { orderId } = useParams();
   const { shopName } = useShopDirectory();
 
-  const [order, setOrder] = useState(/** @type {import("./api").AdminOrder | null} */ (null));
-  const [status, setStatus] = useState("loading");
-  const [error, setError] = useState(
-    /** @type {import("../../lib/api-error").ApiError | null} */ (null),
-  );
   const [movingTo, setMovingTo] = useState(/** @type {string | null} */ (null));
   const [failure, setFailure] = useState(
     /** @type {import("../../lib/api-error").ApiError | null} */ (null),
   );
   const [moved, setMoved] = useState(/** @type {string | null} */ (null));
 
-  const load = useCallback(async () => {
-    setStatus("loading");
-    setError(null);
+  const readOrder = useCallback(() => getOrder(orderId), [orderId]);
 
-    try {
-      setOrder(await getOrder(orderId));
-      setStatus("ready");
-    } catch (caught) {
-      setError(caught);
-      setStatus("failed");
-    }
-  }, [orderId]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  // Polling stops for the duration of a move, and the move's own response is committed, so a read that
+  // was already in flight when the button was pressed cannot land afterwards and show the order back
+  // in the status it has just left.
+  const {
+    data: order,
+    status,
+    error,
+    reload,
+    refresh,
+    commit,
+  } = usePolledResource(readOrder, {
+    intervalMs: ADMIN_ORDER_DETAIL_POLL_MS,
+    paused: movingTo !== null,
+  });
 
   async function move(target) {
     setMovingTo(target);
@@ -62,16 +58,17 @@ function AdminOrderDetailPage() {
     try {
       // The response is the order as the change left it, read back inside the same transaction, so
       // there is no follow-up request that could observe a further move.
-      setOrder(await setOrderStatus(orderId, target));
+      commit(await setOrderStatus(orderId, target));
       setMoved(target);
     } catch (caught) {
       setFailure(caught);
 
       // 409 ORDER_STATUS_CONFLICT means either the move was not legal from where the order stood, or
       // somebody moved it first — the API does not distinguish them, because the answer to both is to
-      // read the order and show what it now says.
+      // read the order and show what it now says. Read in the background, so that the message
+      // explaining the refusal is still on screen when the order it refers to updates beneath it.
       if (caught.code === "ORDER_STATUS_CONFLICT") {
-        await load();
+        await refresh();
       }
     } finally {
       setMovingTo(null);
@@ -94,7 +91,7 @@ function AdminOrderDetailPage() {
         <ErrorState
           error={error}
           title={error?.status === 404 ? "Order not found" : "Could not load this order"}
-          onRetry={load}
+          onRetry={reload}
         />
         {error?.status === 404 ? (
           <p>

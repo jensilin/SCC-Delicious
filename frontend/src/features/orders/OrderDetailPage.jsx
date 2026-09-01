@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useLocation, useParams } from "react-router-dom";
 
 import { Button, ButtonLink } from "../../components/Button";
@@ -8,6 +8,7 @@ import { Notice } from "../../components/Notice";
 import { PageHeader } from "../../components/PageHeader";
 import { STATUS_DESCRIPTIONS, StatusBadge } from "../../components/StatusBadge";
 import { formatTimestamp } from "../../lib/datetime";
+import { STUDENT_ORDER_DETAIL_POLL_MS, usePolledResource } from "../../lib/use-polled-resource";
 import { useShopDirectory } from "../catalogue/shop-directory";
 import { cancelMyOrder, getMyOrder } from "./api";
 import { OrderItemsTable } from "./OrderItemsTable";
@@ -30,11 +31,6 @@ function OrderDetailPage() {
   const location = useLocation();
   const { shopName } = useShopDirectory();
 
-  const [order, setOrder] = useState(/** @type {import("./api").Order | null} */ (null));
-  const [status, setStatus] = useState("loading");
-  const [error, setError] = useState(
-    /** @type {import("../../lib/api-error").ApiError | null} */ (null),
-  );
   const [cancelling, setCancelling] = useState(false);
   const [failure, setFailure] = useState(
     /** @type {import("../../lib/api-error").ApiError | null} */ (null),
@@ -45,22 +41,21 @@ function OrderDetailPage() {
   // screen that shows it rather than on the one the user has left.
   const justPlaced = location.state?.justPlaced === true;
 
-  const load = useCallback(async () => {
-    setStatus("loading");
-    setError(null);
+  const readOrder = useCallback(() => getMyOrder(orderId), [orderId]);
 
-    try {
-      setOrder(await getMyOrder(orderId));
-      setStatus("ready");
-    } catch (caught) {
-      setError(caught);
-      setStatus("failed");
-    }
-  }, [orderId]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  // Polling stops for the duration of a cancellation. The mutation returns the order it produced, and
+  // a read that had already been issued must not be allowed to describe the order as it was before.
+  const {
+    data: order,
+    status,
+    error,
+    reload,
+    refresh,
+    commit,
+  } = usePolledResource(readOrder, {
+    intervalMs: STUDENT_ORDER_DETAIL_POLL_MS,
+    paused: cancelling,
+  });
 
   async function handleCancel() {
     setCancelling(true);
@@ -69,15 +64,16 @@ function OrderDetailPage() {
     try {
       // The response is the cancelled order, so there is no follow-up read that could observe a
       // further change.
-      setOrder(await cancelMyOrder(orderId));
+      commit(await cancelMyOrder(orderId));
       setCancelled(true);
     } catch (caught) {
       setFailure(caught);
 
       // ORDER_STATUS_CONFLICT is the ordinary answer to a stale screen: the shop has started
-      // preparing it, or it is already cancelled. Re-reading shows what it actually says now.
+      // preparing it, or it is already cancelled. Re-reading shows what it actually says now, and it
+      // is read in the background so that the explanation of the refusal stays on screen while it is.
       if (caught.code === "ORDER_STATUS_CONFLICT") {
-        await load();
+        await refresh();
       }
     } finally {
       setCancelling(false);
@@ -100,7 +96,7 @@ function OrderDetailPage() {
         <ErrorState
           error={error}
           title={error?.status === 404 ? "Order not found" : "Could not load this order"}
-          onRetry={load}
+          onRetry={reload}
         />
         {error?.status === 404 ? (
           <p>

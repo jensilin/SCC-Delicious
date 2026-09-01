@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 import { Link } from "react-router-dom";
 
 import { ButtonLink } from "../../components/Button";
@@ -9,6 +9,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { StatusBadge } from "../../components/StatusBadge";
 import { formatTimestamp } from "../../lib/datetime";
 import { formatMinor } from "../../lib/money";
+import { STUDENT_ORDER_LIST_POLL_MS, usePolledResource } from "../../lib/use-polled-resource";
 import { useShopDirectory } from "../catalogue/shop-directory";
 import { listMyOrders } from "./api";
 import styles from "./OrderListPage.module.css";
@@ -16,32 +17,19 @@ import styles from "./OrderListPage.module.css";
 /**
  * The student's own orders, newest first as the API returns them. No sorting or filtering is applied
  * here — the endpoint takes no parameters and the order it returns is the order shown.
+ *
+ * The list re-reads itself in the background so that a status a shop changed appears here without the
+ * page being reloaded.
  */
 function OrderListPage() {
   const { shopName } = useShopDirectory();
 
-  const [orders, setOrders] = useState(/** @type {import("./api").Order[]} */ ([]));
-  const [status, setStatus] = useState("loading");
-  const [error, setError] = useState(
-    /** @type {import("../../lib/api-error").ApiError | null} */ (null),
-  );
+  const readOrders = useCallback(() => listMyOrders(), []);
 
-  const load = useCallback(async () => {
-    setStatus("loading");
-    setError(null);
-
-    try {
-      setOrders(await listMyOrders());
-      setStatus("ready");
-    } catch (caught) {
-      setError(caught);
-      setStatus("failed");
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  const { data: orders, status, error, reload } = usePolledResource(readOrders, {
+    intervalMs: STUDENT_ORDER_LIST_POLL_MS,
+    initialData: /** @type {import("./api").Order[]} */ ([]),
+  });
 
   return (
     <section>
@@ -52,7 +40,7 @@ function OrderListPage() {
       {status === "loading" ? <LoadingState label="Loading your orders" /> : null}
 
       {status === "failed" ? (
-        <ErrorState error={error} title="Could not load your orders" onRetry={load} />
+        <ErrorState error={error} title="Could not load your orders" onRetry={reload} />
       ) : null}
 
       {status === "ready" && orders.length === 0 ? (

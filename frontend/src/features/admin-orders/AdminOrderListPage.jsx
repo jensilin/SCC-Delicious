@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { Button } from "../../components/Button";
@@ -9,6 +9,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { StatusBadge } from "../../components/StatusBadge";
 import { formatTimestamp } from "../../lib/datetime";
 import { formatMinor } from "../../lib/money";
+import { ADMIN_ORDER_LIST_POLL_MS, usePolledResource } from "../../lib/use-polled-resource";
 import { useShopDirectory } from "../catalogue/shop-directory";
 import { listAllOrders } from "./api";
 import styles from "./AdminOrderListPage.module.css";
@@ -23,35 +24,23 @@ const STATUSES = ["PLACED", "PREPARING", "READY", "COMPLETED", "CANCELLED"];
  * parameters — v1 has no server-side filtering, sorting or pagination — so narrowing here is the only
  * option available, and inventing a parameter would just be ignored. The screen says so plainly rather
  * than letting it look like the server did the work.
+ *
+ * The queue re-reads itself in the background, because this is the screen somebody keeps open while
+ * orders arrive. Refreshing is silent: the list, the filters and the scroll position stay exactly as
+ * they were, and only the orders themselves change.
  */
 function AdminOrderListPage() {
   const { shopName } = useShopDirectory();
 
-  const [orders, setOrders] = useState(/** @type {import("./api").AdminOrder[]} */ ([]));
-  const [status, setStatus] = useState("loading");
-  const [error, setError] = useState(
-    /** @type {import("../../lib/api-error").ApiError | null} */ (null),
-  );
-
   const [statusFilter, setStatusFilter] = useState(ALL);
   const [shopFilter, setShopFilter] = useState(ALL);
 
-  const load = useCallback(async () => {
-    setStatus("loading");
-    setError(null);
+  const readOrders = useCallback(() => listAllOrders(), []);
 
-    try {
-      setOrders(await listAllOrders());
-      setStatus("ready");
-    } catch (caught) {
-      setError(caught);
-      setStatus("failed");
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  const { data: orders, status, error, refreshing, reload, refresh } = usePolledResource(readOrders, {
+    intervalMs: ADMIN_ORDER_LIST_POLL_MS,
+    initialData: /** @type {import("./api").AdminOrder[]} */ ([]),
+  });
 
   // Only the shops that actually appear in the queue, so the filter cannot offer a choice that would
   // match nothing. Names come from the cached shop directory, since an order carries only a shopId.
@@ -76,7 +65,10 @@ function AdminOrderListPage() {
   return (
     <section>
       <PageHeader title="Order queue" subtitle="Every order in the food court, newest first.">
-        <Button onClick={load} pending={status === "loading" && orders.length > 0} pendingLabel="Refreshing…">
+        {/* The queue reads itself on a timer, but the button stays: it is how an administrator asks
+            for the current state now instead of waiting out the interval. It performs the same silent
+            read the timer does, so pressing it never blanks the list. */}
+        <Button onClick={refresh} pending={refreshing} pendingLabel="Refreshing…">
           Refresh
         </Button>
       </PageHeader>
@@ -84,8 +76,8 @@ function AdminOrderListPage() {
       <div className={styles.stack}>
         <p className={styles.clientSideNote}>
           <strong>Filtering is applied in this browser.</strong> The admin orders endpoint returns every
-          order and accepts no query parameters, so the full list is loaded once and narrowed here.
-          Nothing below is a server-side query, and there is no pagination.
+          order and accepts no query parameters, so the full list is loaded and narrowed here. Nothing
+          below is a server-side query, and there is no pagination.
         </p>
 
         <div className={styles.filters}>
@@ -137,7 +129,7 @@ function AdminOrderListPage() {
         ) : null}
 
         {status === "failed" ? (
-          <ErrorState error={error} title="Could not load the order queue" onRetry={load} />
+          <ErrorState error={error} title="Could not load the order queue" onRetry={reload} />
         ) : null}
 
         {status === "ready" && orders.length === 0 ? (
