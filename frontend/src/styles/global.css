@@ -1,5 +1,11 @@
 /* Base element styles and the design tokens the CSS Modules read. Component styling lives in the
-   modules beside each component; this file deliberately declares almost no classes. */
+   modules beside each component; this file deliberately declares almost no classes.
+
+   One breakpoint, 640px, is shared by every module that needs one, and it marks the width below
+   which a row of controls can no longer sit beside the text it belongs to. Layouts that can adapt
+   without being told a width — the navigation bar, the shop grid, the flexible card rows — do that
+   instead, so the breakpoint is a fallback for the few places that genuinely need one rather than
+   the mechanism the responsive behaviour is built on. */
 
 :root {
   --page: #faf8f5;
@@ -55,6 +61,14 @@ h3 {
   line-height: 1.25;
   font-weight: 650;
   letter-spacing: -0.01em;
+  /* A shop or food name is user data and can be a single long word. On a phone that word is wider
+     than the screen, and a heading that cannot break would push the whole page sideways. */
+  overflow-wrap: break-word;
+}
+
+img,
+svg {
+  max-width: 100%;
 }
 
 a {

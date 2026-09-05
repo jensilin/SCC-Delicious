@@ -87,3 +87,33 @@
   align-items: center;
   gap: 0.625rem;
 }
+
+/* A cart line carries three things that cannot be made narrower — the stepper, the line total and
+   the remove button — and together they are wider than a phone. The item's name goes above them,
+   which leaves the three of them a line to share: the stepper stays on the left where it is reached
+   first, and the total sits against the remove button on the right. */
+@media (max-width: 640px) {
+  .shopLine,
+  .footer {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .line {
+    flex-wrap: wrap;
+    gap: 0.625rem 0.75rem;
+    padding: 1rem;
+  }
+
+  .details {
+    flex-basis: 100%;
+  }
+
+  /* The 5rem reserved on a desktop lines the totals up in a column. Here the auto margin is what
+     puts the total on the right, and reserving the width on top of that is what pushes the remove
+     button onto a line of its own at 320px. */
+  .lineTotal {
+    min-width: 0;
+    margin-left: auto;
+  }
+}

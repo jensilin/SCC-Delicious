@@ -3,6 +3,10 @@
   align-items: center;
   justify-content: center;
   min-height: 100vh;
+  /* A mobile browser's 100vh is the screen with its address bar subtracted from nothing: the card
+     centres against a viewport taller than the one on show, and the page scrolls by the height of
+     the bar for no reason. The dynamic unit is the height actually visible. */
+  min-height: 100dvh;
   padding: 2rem 1.5rem;
 }
 
@@ -42,7 +46,10 @@
   font-weight: 600;
 }
 
+/* An input carries a default intrinsic width of about 170px that it will not go under unless it is
+   told it may, which is enough to widen the grid column past a narrow card. */
 .input {
+  min-width: 0;
   padding: 0.625rem 0.75rem;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -82,4 +89,16 @@
   text-align: center;
   font-size: 0.9375rem;
   color: var(--text-muted);
+}
+
+/* The card is already fluid up to 400px; what it needs on a phone is less of its own padding, since
+   a 1.5rem gutter and 2rem of card either side leave a 320px screen 208px to type into. */
+@media (max-width: 640px) {
+  .screen {
+    padding: 1.5rem 1rem;
+  }
+
+  .card {
+    padding: 1.5rem 1.25rem;
+  }
 }

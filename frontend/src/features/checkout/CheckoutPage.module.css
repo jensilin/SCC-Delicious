@@ -79,3 +79,14 @@
   font-size: 0.875rem;
   max-width: 46ch;
 }
+
+/* The review lines already reflow on their own: a name that wraps opposite a total that does not.
+   All the card needs on a phone is the narrower gutter the cart it came from uses. */
+@media (max-width: 640px) {
+  .shopLine,
+  .line,
+  .totals {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+}

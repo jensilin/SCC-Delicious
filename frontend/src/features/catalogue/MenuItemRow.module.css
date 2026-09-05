@@ -43,3 +43,20 @@
   align-items: center;
   gap: 0.625rem;
 }
+
+/* The stepper and the add button are a fixed 190px together and neither can shrink, so beside a
+   price and a name they need more room than a phone has. The menu card clips what overflows it,
+   which would take the add button off the screen rather than merely off the row, so the controls
+   move to a line of their own and the name above them gets the full width. */
+@media (max-width: 640px) {
+  .row {
+    flex-wrap: wrap;
+    gap: 0.75rem 1rem;
+    padding: 1rem;
+  }
+
+  .controls {
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
+}

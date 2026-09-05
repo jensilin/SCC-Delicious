@@ -46,9 +46,35 @@
 .metaValue {
   color: var(--text);
   font-variant-numeric: tabular-nums;
+  /* The reference is a single 36-character token with nothing in it a line may be broken at, so
+     without this it is one 280px-wide word. It is the widest thing on the page and it is what makes
+     an order detail scroll sideways on a phone. Breaking mid-token is only ever reached when the
+     line is too narrow for it, which on a desktop it never is. */
+  overflow-wrap: anywhere;
 }
 
 .reference {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.8125rem;
+}
+
+/* The label column costs 6.5rem of a 288px screen and buys alignment between two rows. Stacking
+   returns it to the value, which is the part that is hard to read when it is cramped. */
+@media (max-width: 640px) {
+  .metaRow {
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  .metaLabel {
+    min-width: 0;
+  }
+
+  .statusText {
+    min-width: 0;
+  }
+
+  .statusCard {
+    padding: 1rem;
+  }
 }

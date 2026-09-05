@@ -62,3 +62,13 @@
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
+
+/* A line is a name that wraps beside a total that cannot, which needs no rearranging on a phone —
+   only the same gutter as the cards above and below it on the same screen. */
+@media (max-width: 640px) {
+  .line,
+  .totals {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+}

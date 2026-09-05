@@ -56,3 +56,11 @@
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
+
+/* The card's own rows wrap already — the date keeps to the end of the top row and drops below it
+   once the shop name and the status have taken the width — so only the gutter needs narrowing. */
+@media (max-width: 640px) {
+  .card {
+    padding: 1rem;
+  }
+}

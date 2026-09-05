@@ -58,8 +58,11 @@
   font-weight: 600;
 }
 
+/* An address is one unbreakable word to a browser unless it is told otherwise, and a long one is
+   wider than a phone. */
 .buyerEmail {
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .meta {
@@ -80,9 +83,34 @@
 
 .metaValue {
   color: var(--text);
+  /* The 36-character reference has nothing in it a line may be broken at, and is what makes an
+     order detail scroll sideways on a phone. See the student's copy of this screen. */
+  overflow-wrap: anywhere;
 }
 
 .reference {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.8125rem;
+}
+
+@media (max-width: 640px) {
+  .metaRow {
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  .metaLabel {
+    min-width: 0;
+  }
+
+  /* The status description asks for 14rem before it will wrap, which on a 320px screen is most of
+     the card; it reads perfectly well narrower. */
+  .description {
+    min-width: 0;
+  }
+
+  .statusCard,
+  .buyer {
+    padding: 1rem;
+  }
 }

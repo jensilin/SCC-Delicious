@@ -11,3 +11,12 @@
   margin: 0 auto;
   padding: 2rem 1.5rem 4rem;
 }
+
+/* The gutter is the same 1.5rem at every width down to a phone, where it is 9% of the screen on each
+   side. Narrowing it returns that width to the content, which is what the cards inside are short of,
+   while still keeping the page off the edge of the glass. */
+@media (max-width: 640px) {
+  .main {
+    padding: 1.5rem 1rem 3rem;
+  }
+}

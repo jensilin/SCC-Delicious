@@ -69,3 +69,11 @@
   gap: 0.25rem;
   font-size: 0.9375rem;
 }
+
+/* 3rem of empty space above and below a one-line message is generous on a desktop and most of a
+   phone's first screen. */
+@media (max-width: 640px) {
+  .panel {
+    padding: 2.25rem 1.25rem;
+  }
+}

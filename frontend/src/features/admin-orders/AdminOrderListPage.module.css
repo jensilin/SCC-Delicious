@@ -84,8 +84,11 @@
 
 .buyer {
   font-weight: 600;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* A long address is one word and would otherwise be wider than the card it names. */
+  overflow-wrap: anywhere;
 }
 
 .placedAt {
@@ -110,4 +113,30 @@
 .total {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+/* Two 11rem selects sit side by side on a desktop and wrap to a line each on a phone. Once each has
+   a line to itself the fixed width is what is left over from the desktop layout, and filling the
+   line instead gives the shop names inside the select room to be read. */
+@media (max-width: 640px) {
+  .filters {
+    padding: 1rem;
+  }
+
+  .field {
+    flex: 1 1 100%;
+  }
+
+  .select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .count {
+    margin-left: 0;
+  }
+
+  .card {
+    padding: 1rem;
+  }
 }
