@@ -1,0 +1,16 @@
+<!-- SCC Delicious brand mark: a serving dome on a plate, drawn in the application's own accent.
+     Icon-only, because a wordmark is illegible in a 16px browser tab. Shapes are deliberately few
+     and solid so the silhouette survives that size; the geometry matches src/components/Logo.jsx. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="SCC Delicious">
+  <title>SCC Delicious</title>
+  <defs>
+    <linearGradient id="sccDeliciousWarm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ea580c" />
+      <stop offset="1" stop-color="#c2410c" />
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="8" fill="url(#sccDeliciousWarm)" />
+  <circle cx="16" cy="9.9" r="1.8" fill="#ffffff" />
+  <path d="M7.2 19.1a8.8 8 0 0 1 17.6 0Z" fill="#ffffff" />
+  <rect x="5.2" y="20.6" width="21.6" height="3" rx="1.5" fill="#ffffff" />
+</svg>

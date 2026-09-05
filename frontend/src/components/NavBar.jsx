@@ -3,6 +3,7 @@ import { Link, NavLink } from "react-router-dom";
 
 import { useAuth } from "../app/providers/AuthProvider";
 import { useCart } from "../features/cart/CartProvider";
+import { Logo } from "./Logo";
 import styles from "./NavBar.module.css";
 
 /**
@@ -39,7 +40,7 @@ function NavBar() {
   return (
     <nav className={styles.bar}>
       <Link to="/" className={styles.brand}>
-        SCC Delicious
+        <Logo />
       </Link>
 
       <div className={styles.links}>

@@ -1,0 +1,34 @@
+.lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Sized in pixels rather than em so the mark cannot grow with an inherited font size and change the
+   height of the 60px bar it sits in. It never shrinks either: the wordmark beside it can be
+   compressed by a crowded navigation, but a squashed logo would just look broken. */
+.mark {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+}
+
+/* The name is one phrase and is never broken across lines, which is what it did before it had a mark
+   beside it. */
+.wordmark {
+  white-space: nowrap;
+  font-size: 1rem;
+}
+
+/* The two halves are balanced by weight and colour rather than by size: an initialism set at the same
+   weight as the word after it reads as shouting, and set smaller it reads as an afterthought. */
+.scc {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.delicious {
+  font-weight: 550;
+  letter-spacing: -0.01em;
+  color: var(--accent);
+}

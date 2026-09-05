@@ -8,9 +8,12 @@
   background: var(--surface);
 }
 
+/* Weight and letter-spacing moved into the lockup, which now owns the brand's typography. What stays
+   here is the link: its colour, the removal of the underline, and the alignment of the mark and the
+   wordmark against the rest of the bar. */
 .brand {
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
   color: var(--text);
   text-decoration: none;
 }
