@@ -7,7 +7,6 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "prisma:generate": "prisma generate",
-    "vercel-build": "prisma generate",
     "create-admin": "node scripts/create-admin.js",
     "test": "node --test --test-concurrency=1 \"tests/**/*.test.js\"",
     "test:watch": "node --test --watch --test-concurrency=1 \"tests/**/*.test.js\""
