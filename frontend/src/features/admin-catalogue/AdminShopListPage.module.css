@@ -1,0 +1,136 @@
+.stack {
+  display: grid;
+  gap: 1rem;
+}
+
+/* The same card the order queue puts its filters in, for the same reason: a control strip above a
+   list reads as part of the page furniture rather than as the first item of the list. */
+.create {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.field {
+  display: grid;
+  gap: 0.3125rem;
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.4375rem 0.625rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9375rem;
+}
+
+/* A message about the request rather than about the field takes a line of its own, below both. */
+.formError {
+  flex-basis: 100%;
+}
+
+.list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A row rather than the queue's card link: a shop has no detail screen behind it, so the row is
+   worked in place and the whole of it must not be clickable. */
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+/* A shop name is user data and can be one long word, so it is allowed to break rather than to
+   widen the row past the screen. */
+.name {
+  flex: 1;
+  min-width: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Renaming happens in the row itself: there is one field, and a dialog for one field is a heavier
+   thing to dismiss than the edit is to make. */
+.editForm {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.confirm {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+}
+
+/* The shared phone breakpoint. A label above a field above a button is the only arrangement a form
+   of this kind fits into 320px, and a row's buttons keep to the right of the name they belong to
+   once they have dropped below it. */
+@media (max-width: 640px) {
+  .create,
+  .row {
+    padding: 1rem;
+  }
+
+  .create,
+  .editForm {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* The field's 16rem basis is a width while the form is a row, and would become a height the
+     moment it becomes a column — which is a 256px-tall text input. */
+  .field {
+    flex: 0 0 auto;
+  }
+
+  /* Two buttons leave a name about 90px to wrap in, which breaks it mid-word. The name takes the
+     line instead and the buttons drop beneath it, where there is room for both. */
+  .name {
+    flex-basis: 100%;
+  }
+
+  .actions {
+    margin-left: auto;
+    justify-content: flex-end;
+  }
+}

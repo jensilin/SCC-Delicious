@@ -1,5 +1,6 @@
 import { Route, Routes } from "react-router-dom";
 
+import { AdminShopListPage } from "../features/admin-catalogue/AdminShopListPage";
 import { AdminOrderDetailPage } from "../features/admin-orders/AdminOrderDetailPage";
 import { AdminOrderListPage } from "../features/admin-orders/AdminOrderListPage";
 import { LoginPage } from "../features/auth/LoginPage";
@@ -58,6 +59,12 @@ function AppRoutes() {
           <Route element={<RequireRole role="ADMIN" />}>
             <Route path="admin/orders" element={<AdminOrderListPage />} />
             <Route path="admin/orders/:orderId" element={<AdminOrderDetailPage />} />
+
+            {/* Catalogue administration sits under /admin here although its API does not: the
+                endpoints share /api/v1/shops with browsing and are separated by router, while a
+                client has only one address space and this address is what the ADMIN branch of the
+                route tree protects. */}
+            <Route path="admin/shops" element={<AdminShopListPage />} />
           </Route>
 
           <Route path="*" element={<NotFoundPage />} />

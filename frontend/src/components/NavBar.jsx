@@ -49,9 +49,16 @@ function NavBar() {
         </NavLink>
 
         {isAdmin ? (
-          <NavLink to="/admin/orders" className={linkClassName}>
-            Order queue
-          </NavLink>
+          <>
+            <NavLink to="/admin/orders" className={linkClassName}>
+              Order queue
+            </NavLink>
+            {/* Distinct from "Shops" above, which is the catalogue as anyone browses it. This one is
+                where it is changed. */}
+            <NavLink to="/admin/shops" className={linkClassName}>
+              Manage shops
+            </NavLink>
+          </>
         ) : (
           <>
             <NavLink to="/cart" className={linkClassName}>
