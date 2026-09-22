@@ -1,0 +1,215 @@
+.stack {
+  display: grid;
+  gap: 1rem;
+}
+
+/* The same control card the shop list and the order queue put above their lists. */
+.create {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+/* A name takes what is left; a price and a count are known widths and do not need more. */
+.wide {
+  display: grid;
+  gap: 0.3125rem;
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.narrow {
+  display: grid;
+  gap: 0.3125rem;
+  flex: 0 1 7rem;
+  min-width: 0;
+}
+
+.label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.4375rem 0.625rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9375rem;
+}
+
+.hint {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+/* A message about the request rather than about one field takes a line of its own, below them all. */
+.formError {
+  flex-basis: 100%;
+}
+
+.list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Two lines by design at every width: what the item is, then what its stock is doing. Squeezing the
+   stock controls in beside the name would leave neither enough room to be read. */
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+/* A food name is user data and can be one long word, so it is allowed to break rather than to
+   widen the row past the screen. */
+.name {
+  flex: 1;
+  min-width: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.price {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.stockBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  flex-basis: 100%;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.stock {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+/* The wording and the colour the student's own menu uses for the same figure. */
+.noStock {
+  color: var(--danger-text);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.stockControls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.stockLabel {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.amount {
+  width: 4.5rem;
+  min-width: 0;
+  padding: 0.3125rem 0.5rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9375rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Editing happens in the row itself, as renaming a shop does. */
+.editForm {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.confirm {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+}
+
+/* The shared phone breakpoint. Forms become a column, and each row's three parts — the name, the
+   price beside its actions, and the stock line — each take a line of their own. */
+@media (max-width: 640px) {
+  .create,
+  .row {
+    padding: 1rem;
+  }
+
+  /* Wrapping is what the row needed and what the column must not keep: a column that wraps starts
+     a second column when its children exceed its height, which widens the form instead of the
+     page's content. */
+  .create,
+  .editForm {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+  }
+
+  /* Every basis in this form is a width while it is a row, and would become a height the moment it
+     becomes a column — a 224px-tall text input, and a hint asking for the whole card. */
+  .wide,
+  .narrow,
+  .hint,
+  .formError {
+    flex: 0 0 auto;
+  }
+
+  /* Two buttons leave a name about 90px to wrap in, which breaks it mid-word. The name takes the
+     line, and the price keeps the actions company on the next one. */
+  .name {
+    flex-basis: 100%;
+  }
+
+  .actions {
+    margin-left: auto;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .stockControls {
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
+}

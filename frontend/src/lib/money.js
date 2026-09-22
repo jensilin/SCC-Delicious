@@ -24,4 +24,32 @@ function formatMinor(minor) {
   return `${sign}${major}.${String(remainder).padStart(2, "0")}`;
 }
 
-export { formatMinor };
+/**
+ * Reads a decimal amount somebody typed as the integer minor units every price field in the API is.
+ *
+ * Strict rather than forgiving: text this does not recognise returns null and the form says so.
+ * The alternative is guessing what "12.3.4" or "1,20" was meant to be and storing the guess as a
+ * price, and a price is the one figure in the application a person is asked to pay.
+ *
+ * The arithmetic is integer, for the same reason formatMinor's is: `Number("25.50") * 100` is
+ * 2549.9999999999995 before rounding.
+ *
+ * @param {string} text A whole or two-place decimal, such as "25" or "25.50".
+ * @returns {number | null} Integer minor units, or null when the text is not an amount.
+ */
+function parseMinor(text) {
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(text.trim());
+
+  if (!match) {
+    return null;
+  }
+
+  const [, major, fraction = ""] = match;
+  const minor = Number(major) * 100 + Number(fraction.padEnd(2, "0"));
+
+  // The column is a PostgreSQL integer and the validator bounds it; this only refuses what cannot
+  // survive the conversion above.
+  return Number.isSafeInteger(minor) ? minor : null;
+}
+
+export { formatMinor, parseMinor };

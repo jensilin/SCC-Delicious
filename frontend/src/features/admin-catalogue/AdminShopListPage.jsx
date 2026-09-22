@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { Button } from "../../components/Button";
+import { Button, ButtonLink } from "../../components/Button";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
 import { FieldError, FormError } from "../../components/FieldErrors";
@@ -304,6 +304,11 @@ function AdminShopListPage() {
                     <span className={styles.name}>{shop.name}</span>
 
                     <div className={styles.actions}>
+                      {/* A link rather than a button, so that a menu can be opened in a new tab
+                          while this list stays where it is. */}
+                      <ButtonLink to={`/admin/shops/${shop.id}/foods`} small>
+                        Manage food
+                      </ButtonLink>
                       <Button small disabled={busyId !== null} onClick={() => startEditing(shop)}>
                         Rename
                       </Button>

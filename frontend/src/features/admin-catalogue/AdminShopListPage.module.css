@@ -111,15 +111,20 @@
     padding: 1rem;
   }
 
+  /* Wrapping is what the row needed and what the column must not keep: a column that wraps starts
+     a second column when its children exceed its height, which widens the form instead of the
+     page's content. */
   .create,
   .editForm {
     flex-direction: column;
+    flex-wrap: nowrap;
     align-items: stretch;
   }
 
-  /* The field's 16rem basis is a width while the form is a row, and would become a height the
-     moment it becomes a column — which is a 256px-tall text input. */
-  .field {
+  /* Both bases are widths while the form is a row, and would become heights the moment it becomes
+     a column — a 256px-tall text input, and an error asking for the whole card. */
+  .field,
+  .formError {
     flex: 0 0 auto;
   }
 
@@ -129,8 +134,10 @@
     flex-basis: 100%;
   }
 
+  /* Three actions no longer fit one line on a phone, so they are allowed a second. */
   .actions {
     margin-left: auto;
     justify-content: flex-end;
+    flex-wrap: wrap;
   }
 }

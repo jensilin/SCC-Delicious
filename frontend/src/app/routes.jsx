@@ -1,5 +1,6 @@
 import { Route, Routes } from "react-router-dom";
 
+import { AdminFoodListPage } from "../features/admin-catalogue/AdminFoodListPage";
 import { AdminShopListPage } from "../features/admin-catalogue/AdminShopListPage";
 import { AdminOrderDetailPage } from "../features/admin-orders/AdminOrderDetailPage";
 import { AdminOrderListPage } from "../features/admin-orders/AdminOrderListPage";
@@ -65,6 +66,10 @@ function AppRoutes() {
                 client has only one address space and this address is what the ADMIN branch of the
                 route tree protects. */}
             <Route path="admin/shops" element={<AdminShopListPage />} />
+
+            {/* Nested as the API nests it: a food is only ever addressed beneath the shop that owns
+                it, so the shop is what every food request on this screen is scoped by. */}
+            <Route path="admin/shops/:shopId/foods" element={<AdminFoodListPage />} />
           </Route>
 
           <Route path="*" element={<NotFoundPage />} />
